@@ -1,0 +1,16 @@
+# Core dependencies
+flet>=0.24.0
+# sqlite3 is part of Python's standard library; no need to install via pip.
+
+# AI Providers
+google-generativeai>=0.3.0
+openai>=1.0.0
+
+# PDF Processing
+pypdf>=3.0.0
+
+# HTTP Requests
+requests>=2.31.0
+
+# Optional: for better performance
+# python-dotenv  # Para gerenciar variáveis de ambiente
