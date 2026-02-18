@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-Facilitador de Execucao - QuizVance V2.0
+Facilitador de Execucao - Quiz Vance V2.0
 
 Execute este arquivo para iniciar o app
 """
@@ -67,7 +67,7 @@ if not db_path.exists():
         sys.exit(1)
 
 # Executar aplicacao
-print("[INFO] Iniciando QuizVance V2.0...")
+print("[INFO] Iniciando Quiz Vance V2.0...")
 print()
 
 from main_v2 import main

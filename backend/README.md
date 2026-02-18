@@ -1,4 +1,4 @@
-# QuizVance Backend (Billing + Entitlements)
+# Quiz Vance Backend (Billing + Entitlements)
 
 ## Setup
 

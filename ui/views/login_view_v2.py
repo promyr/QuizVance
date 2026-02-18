@@ -21,6 +21,7 @@ class LoginView(ft.View):
         self.tema_escuro = page.theme_mode == ft.ThemeMode.DARK
         self.modo_atual = "login"
         self.autenticando_google = False
+        self.google_login_enabled = bool(GOOGLE_OAUTH.get("enabled", False))
         self._prev_keyboard_handler = getattr(self._page, "on_keyboard_event", None)
 
         self._criar_componentes()
@@ -43,8 +44,6 @@ class LoginView(ft.View):
             width=360,
             prefix_icon=ft.Icons.LOCK,
         )
-        self.email_login.on_submit = self._submit_login
-        self.senha_login.on_submit = self._submit_login
 
         # Cadastro
         self.nome_cad = ft.TextField(label="Nome completo", width=360, prefix_icon=ft.Icons.PERSON)
@@ -64,9 +63,12 @@ class LoginView(ft.View):
             prefix_icon=ft.Icons.CAKE,
         )
         self.idade_cad.on_change = self._on_data_nascimento_change
-        self.nome_cad.on_submit = self._submit_cadastro
-        self.email_cad.on_submit = self._submit_cadastro
-        self.senha_cad.on_submit = self._submit_cadastro
+
+        self.email_login.on_submit = self._submit_login_id
+        self.senha_login.on_submit = self._submit_login
+        self.nome_cad.on_submit = self._submit_cadastro_nome
+        self.email_cad.on_submit = self._submit_cadastro_email
+        self.senha_cad.on_submit = self._submit_cadastro_senha
         self.idade_cad.on_submit = self._submit_cadastro
 
         self.loading = ft.Column(
@@ -88,34 +90,46 @@ class LoginView(ft.View):
         border_color = "#374151" if self.tema_escuro else "#E5E7EB"
 
         # Responsivo real para desktop/mobile
-        screen_w = float(getattr(self._page, "window_width", None) or getattr(self._page, "width", 1024) or 1024)
-        screen_h = float(getattr(self._page, "window_height", None) or getattr(self._page, "height", 820) or 820)
+        screen_w = float(getattr(self._page, "width", None) or getattr(self._page, "window_width", 1024) or 1024)
+        screen_h = float(getattr(self._page, "height", None) or getattr(self._page, "window_height", 820) or 820)
         compact = screen_w < 860
+        mobile = screen_w < 520
         short_height = screen_h < 760
-        content_w = min(560, screen_w - (24 if compact else 120))
-        logo_w = min(760, screen_w - (40 if compact else 160))
-        logo_h = 130 if short_height else (190 if compact else 240)
-        root_padding = 10 if compact else 24
-        field_width = max(280, content_w - (24 if compact else 40))
+
+        content_w = min(560, screen_w - (16 if mobile else (24 if compact else 120)))
+        logo_w = min(520 if compact else 760, screen_w - (24 if mobile else (40 if compact else 160)))
+
+        if mobile:
+            logo_h = 60 if short_height else 72
+        elif short_height:
+            logo_h = 86
+        elif compact:
+            logo_h = 104
+        else:
+            logo_h = 240
+
+        root_padding = 6 if mobile else (10 if compact else 24)
+        field_width = max(240 if mobile else 280, content_w - (18 if mobile else (24 if compact else 40)))
 
         self.container_login = ft.Column(
             controls=[
-                ft.Text("Bem-vindo de volta!", size=30 if compact else 34, weight=ft.FontWeight.BOLD, color=text_color),
-                ft.Text("Entre para continuar", size=14, color=muted_color),
-                ft.Container(height=6),
+                ft.Text("Bem-vindo de volta!", size=22 if mobile else (30 if compact else 34), weight=ft.FontWeight.BOLD, color=text_color),
+                ft.Text("Entre para continuar", size=13 if mobile else 14, color=muted_color),
+                ft.Container(height=2 if mobile else 6),
                 ft.ElevatedButton(
-                    "Continuar com Google",
+                    "Continuar com Google" if self.google_login_enabled else "Continuar com Google (em breve)",
                     icon=ft.Icons.ACCOUNT_CIRCLE,
                     width=field_width,
-                    height=42,
+                    height=40 if mobile else 42,
                     on_click=self._login_google,
+                    disabled=not self.google_login_enabled,
                     style=ft.ButtonStyle(
                         bgcolor=card_color,
                         color=text_color,
                         shape=ft.RoundedRectangleBorder(radius=12),
                     ),
                 ),
-                ft.Text("ou acesso manual", size=11, color=muted_color),
+                ft.Text("ou acesso manual", size=10 if mobile else 11, color=muted_color),
                 self.email_login,
                 self.senha_login,
                 self.login_feedback,
@@ -123,7 +137,7 @@ class LoginView(ft.View):
                     "Entrar",
                     icon=ft.Icons.LOGIN,
                     width=field_width,
-                    height=44,
+                    height=42 if mobile else 44,
                     on_click=self._acao_login,
                     style=ft.ButtonStyle(
                         bgcolor=CORES["primaria"],
@@ -141,28 +155,29 @@ class LoginView(ft.View):
                 ),
             ],
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=8,
+            spacing=6 if compact else 8,
             visible=True,
         )
 
         self.container_cadastro = ft.Column(
             controls=[
-                ft.Text("Criar conta", size=30 if compact else 34, weight=ft.FontWeight.BOLD, color=text_color),
-                ft.Text("Comece sua jornada", size=13, color=muted_color),
-                ft.Container(height=6),
+                ft.Text("Criar conta", size=22 if mobile else (30 if compact else 34), weight=ft.FontWeight.BOLD, color=text_color),
+                ft.Text("Comece sua jornada", size=12 if mobile else 13, color=muted_color),
+                ft.Container(height=2 if mobile else 6),
                 ft.ElevatedButton(
-                    "Cadastrar com Google",
+                    "Cadastrar com Google" if self.google_login_enabled else "Cadastrar com Google (em breve)",
                     icon=ft.Icons.ACCOUNT_CIRCLE,
                     width=field_width,
-                    height=42,
+                    height=40 if mobile else 42,
                     on_click=self._login_google,
+                    disabled=not self.google_login_enabled,
                     style=ft.ButtonStyle(
                         bgcolor=card_color,
                         color=text_color,
                         shape=ft.RoundedRectangleBorder(radius=12),
                     ),
                 ),
-                ft.Text("ou preencha seus dados", size=11, color=muted_color),
+                ft.Text("ou preencha seus dados", size=10 if mobile else 11, color=muted_color),
                 self.nome_cad,
                 self.email_cad,
                 self.senha_cad,
@@ -171,7 +186,7 @@ class LoginView(ft.View):
                     "Criar conta",
                     icon=ft.Icons.PERSON_ADD,
                     width=field_width,
-                    height=44,
+                    height=42 if mobile else 44,
                     on_click=self._acao_cadastro,
                     style=ft.ButtonStyle(
                         bgcolor=CORES["primaria"],
@@ -188,11 +203,10 @@ class LoginView(ft.View):
                 ),
             ],
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=8,
+            spacing=6 if compact else 8,
             visible=False,
         )
 
-        # Ajusta larguras dos campos para evitar "UI espremida" no desktop/mobile
         for field in [
             self.email_login,
             self.senha_login,
@@ -206,7 +220,6 @@ class LoginView(ft.View):
         self.botao_modo_login = ft.TextButton("Entrar", on_click=self._trocar_para_login)
         self.botao_modo_cadastro = ft.TextButton("Criar conta", on_click=self._trocar_para_cadastro)
 
-        # Logo/banner da marca acima do card
         hero_logo = ft.Container(
             width=logo_w,
             height=logo_h,
@@ -227,56 +240,57 @@ class LoginView(ft.View):
                         alignment=ft.MainAxisAlignment.CENTER,
                         spacing=14,
                     ),
-                    ft.Container(height=6),
+                    ft.Container(height=2 if mobile else 6),
                     self.container_login,
                     self.container_cadastro,
                     self.loading,
                 ],
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=10,
+                spacing=8 if compact else 10,
             ),
             width=content_w,
-            padding=18 if compact else 24,
-            border_radius=18 if compact else 22,
+            padding=14 if mobile else (18 if compact else 24),
+            border_radius=16 if mobile else (18 if compact else 22),
             bgcolor=card_color,
             border=ft.Border.all(1, border_color),
             shadow=ft.BoxShadow(blur_radius=32, spread_radius=1, color=ft.Colors.with_opacity(0.16, "#000000")),
         )
 
-        # Barra de modo mais legivel
         self.botao_modo_login.style = ft.ButtonStyle(
             bgcolor=CORES["primaria"] if self.modo_atual == "login" else "transparent",
             color="white" if self.modo_atual == "login" else muted_color,
             shape=ft.RoundedRectangleBorder(radius=999),
-            padding=ft.Padding(18, 10, 18, 10),
+            padding=ft.Padding(14 if compact else 18, 8 if compact else 10, 14 if compact else 18, 8 if compact else 10),
         )
         self.botao_modo_cadastro.style = ft.ButtonStyle(
             bgcolor=CORES["primaria"] if self.modo_atual == "cadastro" else "transparent",
             color="white" if self.modo_atual == "cadastro" else muted_color,
             shape=ft.RoundedRectangleBorder(radius=999),
-            padding=ft.Padding(18, 10, 18, 10),
+            padding=ft.Padding(14 if compact else 18, 8 if compact else 10, 14 if compact else 18, 8 if compact else 10),
         )
 
         layout = ft.Column(
             controls=[hero_logo, auth_card],
-            alignment=ft.MainAxisAlignment.START if short_height else ft.MainAxisAlignment.CENTER,
+            alignment=ft.MainAxisAlignment.START if compact else ft.MainAxisAlignment.CENTER,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=6 if short_height else (8 if compact else 12),
+            spacing=0 if compact else 12,
         )
 
         root = ft.Container(
-            content=ft.ListView(
-                expand=True,
-                spacing=0,
-                padding=ft.padding.symmetric(horizontal=root_padding, vertical=8 if short_height else root_padding),
+            content=ft.Column(
                 controls=[
                     ft.Container(
                         content=layout,
                         alignment=ft.Alignment(0, 0),
-                        padding=ft.padding.only(bottom=12),
+                        padding=ft.padding.only(bottom=2 if compact else 12),
                     )
                 ],
+                spacing=0,
+                expand=True,
+                scroll=ft.ScrollMode.AUTO,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             ),
+            padding=ft.padding.symmetric(horizontal=root_padding, vertical=2 if compact else root_padding),
             expand=True,
             bgcolor="#EEF2FF" if not self.tema_escuro else bg_color,
         )
@@ -342,6 +356,9 @@ class LoginView(ft.View):
     def _submit_login(self, e):
         self._acao_login(e)
 
+    def _submit_login_id(self, e):
+        self._focar_campo(self.senha_login)
+
     def _acao_cadastro(self, e):
         try:
             nome = (self.nome_cad.value or "").strip()
@@ -371,12 +388,14 @@ class LoginView(ft.View):
 
             sucesso, msg = self.db.criar_conta(nome, identificador, senha, data_nascimento)
             if sucesso:
-                self._mostrar_toast(msg, "sucesso")
-                self.nome_cad.value = ""
-                self.email_cad.value = ""
+                self._mostrar_toast("Conta criada com sucesso. Clique em 'Fazer login' para continuar.", "sucesso")
                 self.senha_cad.value = ""
                 self.idade_cad.value = ""
                 self._trocar_para_login(None)
+                self.login_feedback.value = "Conta criada! Use seu ID e senha para entrar."
+                self.login_feedback.color = CORES["sucesso"]
+                self.login_feedback.visible = True
+                self.update()
             else:
                 self._mostrar_toast(msg, "erro")
         except Exception as ex:
@@ -385,6 +404,21 @@ class LoginView(ft.View):
 
     def _submit_cadastro(self, e):
         self._acao_cadastro(e)
+
+    def _submit_cadastro_nome(self, e):
+        self._focar_campo(self.email_cad)
+
+    def _submit_cadastro_email(self, e):
+        self._focar_campo(self.senha_cad)
+
+    def _submit_cadastro_senha(self, e):
+        self._focar_campo(self.idade_cad)
+
+    def _focar_campo(self, campo):
+        try:
+            self._page.run_task(campo.focus)
+        except Exception:
+            pass
 
     def _on_data_nascimento_change(self, e):
         valor = e.control.value or ""
@@ -406,18 +440,15 @@ class LoginView(ft.View):
             self.idade_cad.update()
 
     def _on_keyboard_event(self, e: ft.KeyboardEvent):
-        if e.key not in ("Enter", "Numpad Enter"):
-            if callable(self._prev_keyboard_handler):
-                self._prev_keyboard_handler(e)
-            return
-        if self.autenticando_google:
-            return
-        if self.modo_atual == "cadastro":
-            self._acao_cadastro(e)
-        else:
-            self._acao_login(e)
+        # Fluxo de autenticacao exige acao explicita por botao.
+        if callable(self._prev_keyboard_handler):
+            self._prev_keyboard_handler(e)
 
     def _login_google(self, e):
+        if not self.google_login_enabled:
+            self._mostrar_toast("Login com Google temporariamente desativado.", "info")
+            return
+
         if self.autenticando_google:
             return
 
@@ -509,4 +540,11 @@ class LoginView(ft.View):
         self._page.snack_bar = sb
         self._page.snack_bar.open = True
         self._page.update()
+
+
+
+
+
+
+
 

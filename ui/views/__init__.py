@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-Views Package - QuizVance V2.0
+Views Package - Quiz Vance V2.0
 
 Todas as telas da aplicaÃ§Ã£o
 """

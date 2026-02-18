@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-Core Package - QuizVance V2.0
+Core Package - Quiz Vance V2.0
 
 MÃ³dulos principais da aplicaÃ§Ã£o
 """

@@ -7,7 +7,7 @@ from .database import Base, engine, get_db
 from . import models, schemas, services
 
 
-app = FastAPI(title="QuizVance Billing API", version="1.0.0")
+app = FastAPI(title="Quiz Vance Billing API", version="1.0.0")
 Base.metadata.create_all(bind=engine)
 APP_SECRET = os.getenv("APP_BACKEND_SECRET", "")
 

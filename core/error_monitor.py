@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Monitoramento centralizado de erros da aplicacao.
 """
@@ -65,8 +65,12 @@ def setup_global_error_hooks() -> None:
     threading.excepthook = _thread_hook
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Sem event loop ativo neste momento.
+        loop = None
 
+    if loop is not None:
         def _async_hook(loop_obj, context):
             exc = context.get("exception")
             if exc:
@@ -75,6 +79,4 @@ def setup_global_error_hooks() -> None:
                 _append_log("ERROR", "asyncio", str(context))
 
         loop.set_exception_handler(_async_hook)
-    except RuntimeError:
-        # Sem event loop ativo neste momento.
-        pass
+

@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-UI Package - QuizVance V2.0
+UI Package - Quiz Vance V2.0
 
 Interface do usuÃ¡rio
 """

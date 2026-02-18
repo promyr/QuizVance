@@ -1,6 +1,6 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
-Configuracoes do QuizVance
+Configuracoes do Quiz Vance
 """
 
 CORES = {
@@ -11,13 +11,13 @@ CORES = {
     "acento_escura": "#059669",
     "acento_clara": "#34D399",
     "fundo": "#F9FAFB",
-    "fundo_escuro": "#111827",
+    "fundo_escuro": "#161616",
     "card": "#FFFFFF",
-    "card_escuro": "#1F2937",
+    "card_escuro": "#232323",
     "texto": "#111827",
-    "texto_escuro": "#F9FAFB",
+    "texto_escuro": "#F3F4F6",
     "texto_sec": "#6B7280",
-    "texto_sec_escuro": "#9CA3AF",
+    "texto_sec_escuro": "#B3B3B3",
     "erro": "#EF4444",
     "sucesso": "#10B981",
     "warning": "#F59E0B",
@@ -63,6 +63,7 @@ AI_PROVIDERS = {
 }
 
 GOOGLE_OAUTH = {
+    "enabled": False,
     "client_id": "YOUR_CLIENT_ID.apps.googleusercontent.com",
     "redirect_uri": "http://localhost:8550/auth/callback",
     "scopes": [
@@ -202,3 +203,6 @@ CATEGORIAS = [
     "Historia",
     "Geografia",
 ]
+
+
+

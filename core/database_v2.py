@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-Database V2.0 - QuizVance
+Database V2.0 - Quiz Vance
 
 Sistema de banco de dados SQLite com suporte a:
 - AutenticaÃ§Ã£o tradicional e OAuth
@@ -49,6 +49,7 @@ class Database:
                 total_questoes INTEGER DEFAULT 0,
                 streak_dias INTEGER DEFAULT 0,
                 ultima_atividade DATE,
+                onboarding_seen INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -322,6 +323,8 @@ class Database:
             cursor.execute("ALTER TABLE usuarios ADD COLUMN data_nascimento TEXT")
         if "meta_questoes_diaria" not in colunas:
             cursor.execute("ALTER TABLE usuarios ADD COLUMN meta_questoes_diaria INTEGER DEFAULT 20")
+        if "onboarding_seen" not in colunas:
+            cursor.execute("ALTER TABLE usuarios ADD COLUMN onboarding_seen INTEGER DEFAULT 1")
         cursor.execute("PRAGMA table_info(questoes_usuario)")
         q_cols = {row[1] for row in cursor.fetchall()}
         if q_cols:
@@ -367,8 +370,8 @@ class Database:
             cursor.execute(
                 """
                 INSERT OR IGNORE INTO usuarios
-                (nome, email, senha, idade, nivel, xp, ultima_atividade)
-                VALUES (?, ?, ?, ?, ?, ?, DATE('now'))
+                (nome, email, senha, idade, nivel, xp, ultima_atividade, onboarding_seen)
+                VALUES (?, ?, ?, ?, ?, ?, DATE('now'), 1)
                 """,
                 ("admin", "admin@local", senha_hash, 18, "Administrador", 99999),
             )
@@ -396,6 +399,17 @@ class Database:
         conn.commit()
         conn.close()
 
+    def marcar_onboarding_visto(self, user_id: int):
+        """Marca a tela de boas-vindas como concluida para o usuario."""
+        conn = self.conectar()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE usuarios SET onboarding_seen = 1 WHERE id = ?",
+            (user_id,),
+        )
+        conn.commit()
+        conn.close()
+
     def criar_conta(self, nome: str, identificador: str, senha: str, data_nascimento: str) -> Tuple[bool, str]:
         """Cria nova conta usando ID e data de nascimento."""
         conn = self.conectar()
@@ -418,8 +432,8 @@ class Database:
             
             # Inserir usuÃ¡rio
             cursor.execute("""
-                INSERT INTO usuarios (nome, email, senha, idade, data_nascimento, ultima_atividade)
-                VALUES (?, ?, ?, ?, ?, DATE('now'))
+                INSERT INTO usuarios (nome, email, senha, idade, data_nascimento, ultima_atividade, onboarding_seen)
+                VALUES (?, ?, ?, ?, ?, DATE('now'), 0)
             """, (nome, email, senha_hash, self._calcular_idade(data_nascimento), data_nascimento))
             
             user_id = cursor.lastrowid
@@ -618,8 +632,8 @@ class Database:
             # Criar novo usuÃ¡rio
             senha_random = hashlib.sha256(google_id.encode()).hexdigest()
             cursor.execute("""
-                INSERT INTO usuarios (nome, email, senha, idade, avatar, ultima_atividade)
-                VALUES (?, ?, ?, ?, ?, DATE('now'))
+                INSERT INTO usuarios (nome, email, senha, idade, avatar, ultima_atividade, onboarding_seen)
+                VALUES (?, ?, ?, ?, ?, DATE('now'), 0)
             """, (nome, email, senha_random, 18, avatar_url or 'user'))
             
             user_id = cursor.lastrowid
@@ -1579,8 +1593,9 @@ class Database:
         return str(row[0]) if row and row[0] is not None else ""
 
 
-# Criar instÃ¢ncia global
-db = Database()
+# Nao criar instancia global em import para evitar inicializacao prematura
+# (especialmente no Android empacotado).
+
 
 
 

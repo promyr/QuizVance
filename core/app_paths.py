@@ -1,52 +1,72 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
-Paths de runtime para suportar execucao em desenvolvimento e em app empacotado.
+Runtime paths for development and packaged app execution.
 """
 
 from __future__ import annotations
 
 import os
-import sys
+import tempfile
 from pathlib import Path
 
-APP_NAME = "QuizVance"
+APP_NAME = "Quiz Vance"
+ANDROID_PACKAGE = "com.flet.quiz_vance_app"
 
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _user_data_root() -> Path:
-    if sys.platform == "win32":
-        base = os.getenv("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(base) / APP_NAME
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / APP_NAME
-    return Path.home() / ".local" / "share" / APP_NAME
+def _candidate_bases():
+    custom = (os.getenv("QUIZVANCE_DATA_DIR") or "").strip()
+    if custom:
+        yield Path(custom)
+
+    is_android = bool(os.getenv("ANDROID_DATA"))
+    if is_android:
+        # Prefer app-private writable paths to avoid permission issues.
+        yield Path.cwd() / ".quizvance_runtime"
+
+        flet_data = (os.getenv("FLET_APP_STORAGE_DATA") or "").strip()
+        if flet_data:
+            yield Path(flet_data) / APP_NAME
+
+        yield Path("/data/user/0") / ANDROID_PACKAGE / "files" / APP_NAME
+        yield Path("/data/data") / ANDROID_PACKAGE / "files" / APP_NAME
+        yield Path("/sdcard/Android/data") / ANDROID_PACKAGE / "files" / APP_NAME
+        yield Path(tempfile.gettempdir()) / APP_NAME
+        return
+
+    home = Path.home()
+    yield home / ".local" / "share" / APP_NAME
+    yield _project_root()
+    yield Path.cwd()
+    yield Path(tempfile.gettempdir()) / APP_NAME
+
+
+def _pick_base(kind: str) -> Path:
+    for base in _candidate_bases():
+        try:
+            target = base / kind
+            target.mkdir(parents=True, exist_ok=True)
+            return target
+        except Exception:
+            continue
+
+    fallback = Path(tempfile.gettempdir()) / APP_NAME / kind
+    try:
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+    except Exception:
+        return Path.cwd() / kind
 
 
 def get_data_dir() -> Path:
-    custom = (os.getenv("QUIZVANCE_DATA_DIR") or "").strip()
-    if custom:
-        return Path(custom)
-
-    source_data = _project_root() / "data"
-    if source_data.exists() and os.access(source_data, os.W_OK):
-        return source_data
-
-    return _user_data_root() / "data"
+    return _pick_base("data")
 
 
 def get_logs_dir() -> Path:
-    custom = (os.getenv("QUIZVANCE_LOG_DIR") or "").strip()
-    if custom:
-        return Path(custom)
-
-    source_logs = _project_root() / "logs"
-    if source_logs.exists() and os.access(source_logs, os.W_OK):
-        return source_logs
-
-    return _user_data_root() / "logs"
+    return _pick_base("logs")
 
 
 def ensure_runtime_dirs() -> None:
@@ -72,4 +92,3 @@ def get_library_dir() -> Path:
 
 def get_log_file_path() -> Path:
     return get_logs_dir() / "app_errors.log"
-

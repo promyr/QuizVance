@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-Sistema de Sons para QuizVance
+Sistema de Sons para Quiz Vance
 Compativel com versoes do Flet com e sem suporte a Audio.
 """
 

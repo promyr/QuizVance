@@ -24,27 +24,37 @@ if sys.platform == 'win32':
     except:
         pass
 
-# Suprimir warning de deprecacao do google.generativeai
-if 'google.generativeai' not in sys.modules:
-    warnings.simplefilter("ignore", FutureWarning)
+# Lazy imports para reduzir latencia de startup.
+genai = None
+OpenAI = None
+GEMINI_AVAILABLE = None
+OPENAI_AVAILABLE = None
 
-# Imports condicionais
-try:
-    import google.generativeai as genai
-    GEMINI_AVAILABLE = True
-    warnings.simplefilter("default")  # Restaurar warnings padrao
-except ImportError:
-    GEMINI_AVAILABLE = False
-    print("[AI] Google Generative AI nao disponivel")
 
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-    print("[AI] OpenAI nao disponivel")
+def _ensure_gemini_available() -> bool:
+    global genai, GEMINI_AVAILABLE
+    if GEMINI_AVAILABLE is not None:
+        return bool(GEMINI_AVAILABLE)
+    try:
+        from google import genai as _genai
+        genai = _genai
+        GEMINI_AVAILABLE = True
+    except Exception:
+        GEMINI_AVAILABLE = False
+    return bool(GEMINI_AVAILABLE)
 
-from pypdf import PdfReader
+
+def _ensure_openai_available() -> bool:
+    global OpenAI, OPENAI_AVAILABLE
+    if OPENAI_AVAILABLE is not None:
+        return bool(OPENAI_AVAILABLE)
+    try:
+        from openai import OpenAI as _OpenAI
+        OpenAI = _OpenAI
+        OPENAI_AVAILABLE = True
+    except Exception:
+        OPENAI_AVAILABLE = False
+    return bool(OPENAI_AVAILABLE)
 
 
 # ========== CLASSE BASE ==========
@@ -91,11 +101,9 @@ class GeminiProvider(AIProvider):
 
     def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
         super().__init__(api_key, model)
-        if not GEMINI_AVAILABLE:
-            raise ImportError("google-generativeai nao esta instalado")
-        genai.configure(api_key=api_key)
-        self.client = genai.GenerativeModel(model)
-        self._clients = {model: self.client}
+        if not _ensure_gemini_available():
+            raise ImportError("google-genai nao esta instalado")
+        self.client = genai.Client(api_key=api_key)
         self.last_error_kind = ""
         self.last_error_message = ""
         self._fallback_models = self._build_fallback_models(model)
@@ -109,11 +117,6 @@ class GeminiProvider(AIProvider):
             "gemini-3-pro-preview",
         ]
         return [model] + [m for m in preferred if m != model]
-
-    def _get_client(self, model: str):
-        if model not in self._clients:
-            self._clients[model] = genai.GenerativeModel(model)
-        return self._clients[model]
 
     def _classify_error(self, message: str) -> str:
         msg = (message or "").lower()
@@ -132,14 +135,13 @@ class GeminiProvider(AIProvider):
 
         for idx, candidate_model in enumerate(self._fallback_models):
             try:
-                client = self._get_client(candidate_model)
-                response = client.generate_content(prompt)
-                if response.text:
+                response = self.client.models.generate_content(model=candidate_model, contents=prompt)
+                text = getattr(response, "text", None)
+                if text:
                     self.model = candidate_model
-                    self.client = client
                     if idx > 0:
                         print(f"[GEMINI] Fallback ativado com sucesso: {candidate_model}")
-                    return response.text
+                    return text
             except Exception as e:
                 msg = str(e)
                 kind = self._classify_error(msg)
@@ -158,12 +160,28 @@ class OpenAIProvider(AIProvider):
     
     def __init__(self, api_key: str, model: str = "gpt-4o-mini"):
         super().__init__(api_key, model)
-        if not OPENAI_AVAILABLE:
+        if not _ensure_openai_available():
             raise ImportError("openai nÃ£o estÃ¡ instalado")
         self.client = OpenAI(api_key=api_key)
+        self.last_error_kind = ""
+        self.last_error_message = ""
+
+    def _classify_error(self, message: str) -> str:
+        msg = (message or "").lower()
+        if "rate limit" in msg or "quota" in msg or "429" in msg:
+            return "quota_soft" if "per" in msg else "quota_hard"
+        if "insufficient_quota" in msg:
+            return "quota_hard"
+        if "401" in msg or "unauthorized" in msg or "invalid api key" in msg:
+            return "auth"
+        if "timeout" in msg or "temporar" in msg or "unavailable" in msg:
+            return "transient"
+        return "other"
     
     def generate_text(self, prompt: str) -> Optional[str]:
         """Gera texto usando OpenAI"""
+        self.last_error_kind = ""
+        self.last_error_message = ""
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -173,6 +191,9 @@ class OpenAIProvider(AIProvider):
             )
             return response.choices[0].message.content
         except Exception as e:
+            msg = str(e)
+            self.last_error_kind = self._classify_error(msg)
+            self.last_error_message = msg
             print(f"[OPENAI] Erro: {e}")
             return None
 
@@ -299,13 +320,131 @@ class AIService:
             "correta_index": correta_idx,
             "explicacao": str(explicacao).strip()
         }
+
+    def _provider_error_kind(self) -> str:
+        provider = getattr(self, "provider", None)
+        return str(getattr(provider, "last_error_kind", "") or "").strip().lower()
+
+    def _should_abort_retry(self) -> bool:
+        """Evita repeticao de chamadas quando erro e terminal para a sessao."""
+        return self._provider_error_kind() in {"quota_hard", "quota_soft", "auth"}
+
+    def _build_quiz_context(self, content: Optional[List[str]], topic: Optional[str]) -> Optional[str]:
+        contexto = ""
+        if content:
+            sample_size = min(4, len(content))
+            try:
+                amostra = random.sample(content, sample_size)
+            except Exception:
+                amostra = list(content[:sample_size])
+            texto_base = "\n".join(amostra)[:6000]
+            contexto = f"Baseado no texto:\n{texto_base}\n"
+            if topic:
+                contexto += f"\nFoque no topico: {topic}."
+        elif topic:
+            contexto = f"Voce e um professor especialista. Gere questoes tecnicas sobre: '{topic}'."
+        return contexto or None
+
+    def _normalize_quiz_batch_payload(self, data: Any, limit: int) -> List[Dict]:
+        itens = []
+        if isinstance(data, list):
+            itens = data
+        elif isinstance(data, dict):
+            for key in ("questoes", "questions", "itens", "items"):
+                payload = data.get(key)
+                if isinstance(payload, list):
+                    itens = payload
+                    break
+            if not itens:
+                itens = [data]
+        result = []
+        seen = set()
+        safe_limit = max(1, int(limit or 1))
+        for item in itens:
+            quiz = self._normalize_quiz(item if isinstance(item, dict) else {})
+            if not quiz:
+                continue
+            key = quiz.get("pergunta", "").strip().lower()
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            result.append(quiz)
+            if len(result) >= safe_limit:
+                break
+        return result
+
+    def generate_quiz_batch(
+        self,
+        content: Optional[List[str]] = None,
+        topic: Optional[str] = None,
+        difficulty: str = "Medio",
+        quantity: int = 3,
+        retries: int = 2,
+    ) -> List[Dict]:
+        """
+        Gera varias questoes em uma unica chamada para reduzir latencia/custo.
+        """
+        quantidade = max(1, min(10, int(quantity or 1)))
+        tentativas = max(1, int(retries or 1))
+        contexto = self._build_quiz_context(content, topic)
+        if not contexto:
+            print("[AI] Sem conteudo ou topico")
+            return []
+
+        prompt = f"""
+{contexto}
+
+Crie {quantidade} questoes de multipla escolha nivel {difficulty}.
+
+IMPORTANTE: Responda APENAS com JSON valido, sem texto adicional.
+
+Formato JSON obrigatorio:
+[
+  {{
+    "pergunta": "Texto da pergunta...",
+    "opcoes": ["A. Primeira opcao", "B. Segunda opcao", "C. Terceira opcao", "D. Quarta opcao"],
+    "correta_index": 0,
+    "explicacao": "Explicacao breve da resposta correta..."
+  }}
+]
+"""
+
+        for attempt in range(tentativas):
+            try:
+                text = self.provider.generate_text(prompt)
+                if not text:
+                    if self._should_abort_retry():
+                        break
+                    continue
+
+                data = self.provider.extract_json_list(text)
+                if data is None:
+                    data = self.provider.extract_json_object(text)
+
+                normalizadas = self._normalize_quiz_batch_payload(data, quantidade)
+                if normalizadas:
+                    print(f"[AI] [OK] {len(normalizadas)} questoes geradas em lote")
+                    return normalizadas
+
+                print(f"[AI] Tentativa {attempt + 1}: lote invalido")
+            except Exception as e:
+                print(f"[AI] Tentativa {attempt + 1} erro em lote: {e}")
+                if self._should_abort_retry():
+                    break
+
+            if attempt < tentativas - 1:
+                time.sleep(0.35)
+
+        print("[AI] [ERRO] Falha ao gerar lote de questoes")
+        return []
     
     def generate_quiz(
         self,
         content: Optional[List[str]] = None,
         topic: Optional[str] = None,
-        difficulty: str = "MÃ©dio",
-        retries: int = 3
+        difficulty: str = "Medio",
+        retries: int = 2
     ) -> Optional[Dict]:
         """
         Gera uma questÃ£o de mÃºltipla escolha
@@ -319,68 +458,48 @@ class AIService:
         Returns:
             Dict com pergunta, opÃ§Ãµes, resposta correta e explicaÃ§Ã£o
         """
-        # Construir contexto
-        contexto = ""
-        if content:
-            amostra = random.sample(content, min(3, len(content)))
-            texto_base = "\n".join(amostra)[:5000]
-            contexto = f"Baseado no texto:\n{texto_base}\n"
-            if topic:
-                contexto += f"\nFoque no tÃ³pico: {topic}."
-        elif topic:
-            contexto = f"VocÃª Ã© um professor especialista. Gere uma questÃ£o tÃ©cnica sobre: '{topic}'."
-        else:
-            print("[AI] Sem conteudo ou topico")
-            return None
-        
-        prompt = f"""
-{contexto}
-
-Crie 1 questÃ£o de mÃºltipla escolha nÃ­vel {difficulty}.
-
-IMPORTANTE: Responda APENAS com JSON vÃ¡lido, sem texto adicional.
-
-Formato JSON obrigatÃ³rio:
-{{
-  "pergunta": "Texto da pergunta...",
-  "opcoes": ["A. Primeira opÃ§Ã£o", "B. Segunda opÃ§Ã£o", "C. Terceira opÃ§Ã£o", "D. Quarta opÃ§Ã£o"],
-  "correta_index": 0,
-  "explicacao": "ExplicaÃ§Ã£o detalhada da resposta correta..."
-}}
-"""
-        
-        for attempt in range(retries):
-            try:
-                text = self.provider.generate_text(prompt)
-                if not text:
-                    continue
-                
-                data = self.provider.extract_json_object(text)
-                if not data:
-                    print(f"[AI] Tentativa {attempt + 1}: JSON invalido")
-                    continue
-                
-                quiz = self._normalize_quiz(data)
-                if quiz:
-                    print(f"[AI] [OK] Quiz gerado com sucesso")
-                    return quiz
-                
-                print(f"[AI] Tentativa {attempt + 1}: Normalizacao falhou")
-                
-            except Exception as e:
-                print(f"[AI] Tentativa {attempt + 1} erro: {e}")
-            
-            if attempt < retries - 1:
-                time.sleep(1)
-        
+        lote = self.generate_quiz_batch(
+            content=content,
+            topic=topic,
+            difficulty=difficulty,
+            quantity=1,
+            retries=retries,
+        )
+        if lote:
+            return lote[0]
         print("[AI] [ERRO] Falha ao gerar quiz apos todas as tentativas")
         return None
-    
+
+    def _normalize_flashcard(self, item: Dict) -> Optional[Dict]:
+        if not isinstance(item, dict):
+            return None
+        frente = (
+            item.get("frente")
+            or item.get("front")
+            or item.get("pergunta")
+            or item.get("question")
+            or item.get("titulo")
+            or ""
+        )
+        verso = (
+            item.get("verso")
+            or item.get("back")
+            or item.get("resposta")
+            or item.get("answer")
+            or item.get("explicacao")
+            or ""
+        )
+        frente = str(frente).strip()
+        verso = str(verso).strip()
+        if not frente or not verso:
+            return None
+        return {"frente": frente, "verso": verso}
+
     def generate_flashcards(
         self,
         content: List[str],
         quantity: int = 5,
-        retries: int = 3
+        retries: int = 2
     ) -> List[Dict]:
         """
         Gera flashcards
@@ -395,11 +514,13 @@ Formato JSON obrigatÃ³rio:
         """
         if not content:
             return []
-        
+
+        quantidade = max(1, min(20, int(quantity or 5)))
+        tentativas = max(1, int(retries or 1))
         texto_amostra = "\n".join(random.sample(content, min(4, len(content))))[:6000]
-        
+
         prompt = f"""
-Gere {quantity} flashcards do texto abaixo.
+Gere {quantidade} flashcards do texto abaixo.
 
 IMPORTANTE: Responda APENAS com JSON vÃ¡lido, sem texto adicional.
 
@@ -412,26 +533,52 @@ Formato JSON obrigatÃ³rio:
 Texto:
 {texto_amostra}
 """
-        
-        for attempt in range(retries):
+
+        for attempt in range(tentativas):
             try:
                 text = self.provider.generate_text(prompt)
                 if not text:
+                    if self._should_abort_retry():
+                        break
                     continue
-                
+
                 data = self.provider.extract_json_list(text)
+                if data is None:
+                    data = self.provider.extract_json_object(text)
+                    if isinstance(data, dict):
+                        for key in ("flashcards", "cards", "itens", "items"):
+                            maybe_list = data.get(key)
+                            if isinstance(maybe_list, list):
+                                data = maybe_list
+                                break
                 if isinstance(data, list) and len(data) > 0:
-                    print(f"[AI] [OK] {len(data)} flashcards gerados")
-                    return data
-                
+                    cards = []
+                    seen = set()
+                    for item in data:
+                        card = self._normalize_flashcard(item if isinstance(item, dict) else {})
+                        if not card:
+                            continue
+                        key = card["frente"].lower()
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        cards.append(card)
+                        if len(cards) >= quantidade:
+                            break
+                    if cards:
+                        print(f"[AI] [OK] {len(cards)} flashcards gerados")
+                        return cards
+
                 print(f"[AI] Tentativa {attempt + 1}: Lista JSON invalida")
-                
+
             except Exception as e:
                 print(f"[AI] Tentativa {attempt + 1} erro: {e}")
-            
-            if attempt < retries - 1:
-                time.sleep(1)
-        
+
+                if self._should_abort_retry():
+                    break
+            if attempt < tentativas - 1:
+                time.sleep(0.35)
+
         print("[AI] [ERRO] Falha ao gerar flashcards")
         return []
     
@@ -439,7 +586,7 @@ Texto:
         self,
         content: List[str],
         difficulty: str = "MÃ©dio",
-        retries: int = 3
+        retries: int = 2
     ) -> Optional[Dict]:
         """
         Gera pergunta dissertativa
@@ -467,10 +614,13 @@ Texto:
 {texto_amostra}
 """
         
-        for attempt in range(retries):
+        tentativas = max(1, int(retries or 1))
+        for attempt in range(tentativas):
             try:
                 text = self.provider.generate_text(prompt)
                 if not text:
+                    if self._should_abort_retry():
+                        break
                     continue
                 
                 data = self.provider.extract_json_object(text)
@@ -482,9 +632,11 @@ Texto:
                 
             except Exception as e:
                 print(f"[AI] Tentativa {attempt + 1} erro: {e}")
+                if self._should_abort_retry():
+                    break
             
-            if attempt < retries - 1:
-                time.sleep(1)
+            if attempt < tentativas - 1:
+                time.sleep(0.35)
         
         print("[AI] [ERRO] Falha ao gerar pergunta aberta")
         return None
@@ -494,7 +646,7 @@ Texto:
         question: str,
         student_answer: str,
         expected_answer: str,
-        retries: int = 3
+        retries: int = 2
     ) -> Dict:
         """
         Corrige resposta dissertativa
@@ -523,10 +675,13 @@ Formato JSON obrigatÃ³rio:
 Nota de 0 a 100. Considere correto se nota >= 70.
 """
         
-        for attempt in range(retries):
+        tentativas = max(1, int(retries or 1))
+        for attempt in range(tentativas):
             try:
                 text = self.provider.generate_text(prompt)
                 if not text:
+                    if self._should_abort_retry():
+                        break
                     continue
                 
                 data = self.provider.extract_json_object(text)
@@ -538,9 +693,11 @@ Nota de 0 a 100. Considere correto se nota >= 70.
                 
             except Exception as e:
                 print(f"[AI] Tentativa {attempt + 1} erro: {e}")
+                if self._should_abort_retry():
+                    break
             
-            if attempt < retries - 1:
-                time.sleep(1)
+            if attempt < tentativas - 1:
+                time.sleep(0.35)
         
         print("[AI] âŒ Falha ao corrigir resposta")
         return {
@@ -553,7 +710,7 @@ Nota de 0 a 100. Considere correto se nota >= 70.
         self,
         question: str,
         answer: str,
-        retries: int = 3
+        retries: int = 2
     ) -> str:
         """
         Explica a questao de forma simples ("explain like I'm 5").
@@ -568,15 +725,18 @@ Resposta Correta: {answer}
 
 Explique para um estudante iniciante:
 """
-        for attempt in range(retries):
+        tentativas = max(1, int(retries or 1))
+        for attempt in range(tentativas):
             try:
                 text = self.provider.generate_text(prompt)
                 if text:
                     return text.strip()
             except Exception as e:
                 print(f"[AI] Tentativa {attempt + 1} erro: {e}")
-            if attempt < retries - 1:
-                time.sleep(1)
+                if self._should_abort_retry():
+                    break
+            if attempt < tentativas - 1:
+                time.sleep(0.35)
         
         return "Nao foi possivel gerar uma explicacao simplificada no momento."
 
@@ -586,7 +746,7 @@ Explique para um estudante iniciante:
         data_prova: str,
         tempo_diario_min: int,
         topicos_prioritarios: Optional[List[str]] = None,
-        retries: int = 3,
+        retries: int = 2,
     ) -> List[Dict]:
         topicos = topicos_prioritarios or ["Geral"]
         prompt = f"""
@@ -608,10 +768,13 @@ Retorne APENAS JSON no formato:
   }}
 ]
 """
-        for attempt in range(retries):
+        tentativas = max(1, int(retries or 1))
+        for attempt in range(tentativas):
             try:
                 text = self.provider.generate_text(prompt)
                 if not text:
+                    if self._should_abort_retry():
+                        break
                     continue
                 data = self.provider.extract_json_list(text)
                 if isinstance(data, list) and data:
@@ -631,9 +794,10 @@ Retorne APENAS JSON no formato:
                     if result:
                         return result
             except Exception:
-                pass
-            if attempt < retries - 1:
-                time.sleep(1)
+                if self._should_abort_retry():
+                    break
+            if attempt < tentativas - 1:
+                time.sleep(0.35)
 
         # Fallback deterministico
         dias = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"]
@@ -655,7 +819,7 @@ Retorne APENAS JSON no formato:
         self,
         content: List[str],
         topic: str = "",
-        retries: int = 3,
+        retries: int = 2,
     ) -> Dict:
         if not content:
             return {"resumo": "", "topicos": []}
@@ -673,10 +837,13 @@ Retorne APENAS JSON:
 Material:
 {texto}
 """
-        for attempt in range(retries):
+        tentativas = max(1, int(retries or 1))
+        for attempt in range(tentativas):
             try:
                 text = self.provider.generate_text(prompt)
                 if not text:
+                    if self._should_abort_retry():
+                        break
                     continue
                 data = self.provider.extract_json_object(text)
                 if isinstance(data, dict):
@@ -688,9 +855,10 @@ Material:
                     if resumo:
                         return {"resumo": resumo, "topicos": topicos}
             except Exception:
-                pass
-            if attempt < retries - 1:
-                time.sleep(1)
+                if self._should_abort_retry():
+                    break
+            if attempt < tentativas - 1:
+                time.sleep(0.35)
         return {"resumo": "Resumo indisponivel no momento.", "topicos": []}
 
 
@@ -698,6 +866,7 @@ Material:
 def read_pdf(filepath: str) -> Optional[List[str]]:
     """LÃª PDF e retorna lista de textos"""
     try:
+        from pypdf import PdfReader
         reader = PdfReader(filepath)
         texts = []
         for page in reader.pages:
