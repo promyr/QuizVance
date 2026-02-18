@@ -1,113 +1,80 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Quiz Vance App — README</title>
-</head>
+<div align="center">
+  <img src="assets/logo_quizvance.png" alt="Quiz Vance" width="220" />
+  
+  <h1>Aplicativo Quiz Vance</h1>
 
-<body>
-  <div align="center">
-    <img src="assets/logo_quizvance.png" alt="Quiz Vance Logo" width="220" />
-    <h1>Quiz Vance App</h1>
-    <h3>Plataforma Inteligente de Estudos Assistida por IA</h3>
-    <p><em>Questões • Flashcards • Planos Estratégicos • Android &amp; Desktop</em></p>
-
-    <p>
-      <a href="#visao-geral"><strong>Visão Geral</strong></a> ·
-      <a href="#proposta-de-valor"><strong>Proposta de Valor</strong></a> ·
-      <a href="#arquitetura"><strong>Arquitetura</strong></a> ·
-      <a href="#estrutura"><strong>Estrutura</strong></a> ·
-      <a href="#ambiente"><strong>Setup</strong></a> ·
-      <a href="#android"><strong>Build Android</strong></a> ·
-      <a href="#ia"><strong>Configurar IA</strong></a> ·
-      <a href="#ux"><strong>UX</strong></a> ·
-      <a href="#seguranca"><strong>Segurança</strong></a> ·
-      <a href="#roadmap"><strong>Roadmap</strong></a> ·
-      <a href="#contribuicao"><strong>Contribuição</strong></a> ·
-      <a href="#licenca"><strong>Licença</strong></a>
-    </p>
-  </div>
-
-  <hr />
-
-  <h2 id="visao-geral">📌 Visão Geral</h2>
   <p>
-    O <strong>Quiz Vance App</strong> é uma plataforma multiplataforma de estudos assistida por Inteligência Artificial,
-    projetada para otimizar o aprendizado por meio de geração dinâmica de conteúdo educacional.
-  </p>
-  <p>
-    A aplicação integra geração de questões, criação inteligente de flashcards e planejamento semanal estratégico,
-    com foco em produtividade, retenção e escalabilidade técnica.
-  </p>
-  <p>
-    Desenvolvido em <strong>Python com Flet (Flutter under the hood)</strong>, o projeto foi arquitetado para suportar
-    expansão contínua, modularização e integração com múltiplos provedores de IA.
+    <strong>Plataforma Inteligente de Estudos Assistidos por IA</strong><br/>
+    Questões • Flashcards • Planos Estratégicos • Android & Desktop
   </p>
 
-  <h2 id="proposta-de-valor">🚀 Proposta de Valor</h2>
-  <ul>
-    <li>Geração instantânea de questões com feedback estruturado.</li>
-    <li>Modo prova com cronômetro e simulação realista.</li>
-    <li>Flashcards inteligentes com revisão ativa e registro de progresso.</li>
-    <li>Upload de materiais (PDF / TXT / MD) para personalização e biblioteca local.</li>
-    <li>Plano de estudos semanal gerado por IA, com foco em priorização.</li>
-    <li>Painel de estatísticas e acompanhamento de evolução.</li>
-    <li>Suporte a Android (APK) e Desktop.</li>
-    <li>Arquitetura preparada para crescimento.</li>
-  </ul>
+  <p>
+    <a href="#-visão-geral"><strong>Visão Geral</strong></a> ·
+    <a href="#-proposta-de-valor"><strong>Proposta de Valor</strong></a> ·
+    <a href="#-stack-técnica"><strong>Stack</strong></a> ·
+    <a href="#-estrutura-do-projeto"><strong>Estrutura</strong></a> ·
+    <a href="#-setup-de-desenvolvimento"><strong>Setup</strong></a> ·
+    <a href="#-build-android"><strong>Build Android</strong></a> ·
+    <a href="#-configuração-de-ia"><strong>Configurar IA</strong></a> ·
+    <a href="#-roadmap"><strong>Roadmap</strong></a>
+  </p>
+</div>
 
-  <h2 id="arquitetura">🧠 Arquitetura Técnica</h2>
+---
 
-  <h3>Stack Principal</h3>
-  <table border="1" cellpadding="8" cellspacing="0">
-    <thead>
-      <tr>
-        <th align="left">Camada</th>
-        <th align="left">Tecnologia</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>Interface</td>
-        <td>Flet 0.80.x (Flutter engine)</td>
-      </tr>
-      <tr>
-        <td>Linguagem</td>
-        <td>Python 3.14</td>
-      </tr>
-      <tr>
-        <td>IA</td>
-        <td>Google Gemini (<code>google-genai</code>) + OpenAI (<code>openai</code>)</td>
-      </tr>
-      <tr>
-        <td>Persistência</td>
-        <td>SQLite</td>
-      </tr>
-      <tr>
-        <td>Build Mobile</td>
-        <td>Flet Build + Flutter SDK</td>
-      </tr>
-      <tr>
-        <td>Testes</td>
-        <td>Pytest</td>
-      </tr>
-    </tbody>
-  </table>
+## 📌 Visão Geral
 
-  <h2 id="estrutura">🏗 Estrutura do Projeto</h2>
-  <pre><code>Quiz Vance App/
+O **Quiz Vance App** é uma plataforma multiplataforma de estudos assistida por Inteligência Artificial, projetada para acelerar a preparação acadêmica por meio de geração estruturada de conteúdo.
+
+A aplicação combina **questões objetivas**, **flashcards inteligentes** e **planejamento semanal**, com foco em produtividade, retenção e escalabilidade técnica.
+
+Construído com **Python + Flet (Flutter engine)**, o projeto foi arquitetado para suportar evolução contínua, modularização e integração com múltiplos provedores de IA.
+
+---
+
+## 🚀 Proposta de Valor
+
+- Geração dinâmica de questões com feedback imediato e estruturado  
+- Modo prova com cronômetro e simulação realista  
+- Flashcards inteligentes com revisão ativa e acompanhamento de progresso  
+- Upload de materiais (PDF / TXT / MD) para criação de quizzes personalizados  
+- Biblioteca local de conteúdos e organização por estudo  
+- Plano semanal assistido por IA, com priorização de tópicos  
+- Estatísticas e indicadores de desempenho  
+- Tema claro/escuro persistente e navegação responsiva  
+- Build Android automatizado via script  
+
+---
+
+## 🧩 Stack Técnica
+
+| Camada | Tecnologia |
+|-------|------------|
+| UI | Flet 0.80.x (Flutter engine) |
+| Linguagem | Python 3.14 |
+| IA | Google Gemini (`google-genai`) + OpenAI (`openai`) |
+| Persistência | SQLite |
+| Testes | Pytest |
+| Build Android | Flutter SDK + JDK 17 + Android SDK |
+
+---
+
+## 📂 Estrutura do Projeto
+
+
+Quiz Vance App/
 │
-├── main_v2.py                 # Shell principal, rotas e regras
+├── main_v2.py                 # Shell principal, rotas, views e regras
 ├── run.py                     # Entry point da aplicação
 ├── core/
-│   ├── ai_service_v2.py       # Camada de integração com IA
-│   └── database_v2.py         # Persistência SQLite
+│   ├── ai_service_v2.py       # Serviços e providers de IA
+│   └── database_v2.py         # Persistência (SQLite)
 ├── ui/views/
 │   └── login_view_v2.py       # Autenticação e onboarding
 ├── scripts/
-│   └── build_android.ps1      # Script de build APK/AAB
-└── assets/                    # Ícones e identidade visual
+│   └── build_android.ps1      # Build APK/AAB
+└── assets/                    # Identidade visual (ícones, logo)
+
 </code></pre>
 
   <p>
