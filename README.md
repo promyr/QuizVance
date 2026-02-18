@@ -1,149 +1,209 @@
-diff --git a/c:\Users\Belchior\IdeaProjects\Quiz Vance App\README.md b/c:\Users\Belchior\IdeaProjects\Quiz Vance App\README.md
---- a/c:\Users\Belchior\IdeaProjects\Quiz Vance App\README.md
-+++ b/c:\Users\Belchior\IdeaProjects\Quiz Vance App\README.md
-@@ -1,71 +1,88 @@
--# Quiz Vance App
-+<div align="center">
-+  <img src="assets/logo_quizvance.png" alt="Quiz Vance" width="240" />
-+  <h1>Quiz Vance App</h1>
-+  <p>Estudo assistido por IA · Questões · Flashcards · Planos Semanais · Android & Desktop</p>
-+  <a href="#destaques"><strong>Destaques</strong></a> ·
-+  <a href="#stack">Stack</a> ·
-+  <a href="#setup">Setup</a> ·
-+  <a href="#build-android">Build Android</a> ·
-+  <a href="#ia">Configurar IA</a> ·
-+  <a href="#roadmap">Roadmap</a>
-+</div>
- 
--Aplicativo completo de estudo assistido por IA, focado em geração rápida de questões, flashcards e planos semanais. Construído em Python com Flet, multiplataforma (desktop, web, Android) e pronto para crescer.
-+<hr/>
- 
--## Destaques
--- Questões objetivas com feedback imediato e modo prova com cronômetro.
--- Flashcards gerados por IA com revisão ativa e registro de progresso.
--- Suporte a uploads de PDF/TXT/MD para personalizar quizzes.
--- Biblioteca local, plano de estudos semanal e painel de estatísticas.
--- Tema claro/escuro persistente e navegação responsiva.
--- Build Android via `flet build apk` (script incluso).
-+<h2 id="destaques">✨ Destaques</h2>
-+<ul>
-+  <li>Questões objetivas com feedback imediato e modo prova com cronômetro.</li>
-+  <li>Flashcards gerados por IA, revisão ativa e registro de progresso.</li>
-+  <li>Upload de PDF/TXT/MD para quizzes personalizados e biblioteca local.</li>
-+  <li>Plano semanal com IA, estatísticas e tema claro/escuro persistente.</li>
-+  <li>Build Android pronto via <code>flet build apk</code> (script incluso).</li>
-+</ul>
- 
--## Stack Técnica
--- **Framework UI**: Flet 0.80.x (Flutter sob o capô).
--- **Linguagem**: Python 3.14.
--- **IA**: Google Gemini (`google-genai`) e OpenAI (`openai`), com fallback econômico.
--- **Banco local**: SQLite (via `core/database_v2.py`).
-+<h2 id="stack">🧩 Stack Técnica</h2>
-+<ul>
-+  <li><strong>UI</strong>: Flet 0.80.x (Flutter under the hood).</li>
-+  <li><strong>Linguagem</strong>: Python 3.14.</li>
-+  <li><strong>IA</strong>: Google Gemini (<code>google-genai</code>) e OpenAI (<code>openai</code>), com fallback econômico.</li>
-+  <li><strong>Banco local</strong>: SQLite (ver <code>core/database_v2.py</code>).</li>
-+</ul>
- 
--## Estrutura Rápida
--- `main_v2.py`: shell, rotas, views, regras de negócio.
--- `ui/views/login_view_v2.py`: autenticação e onboarding.
--- `core/ai_service_v2.py`: providers e serviços de IA.
--- `scripts/build_android.ps1`: build APK/AAB.
--- `assets/`: ícones e logo.
-+<h2 id="estrutura">📂 Estrutura Rápida</h2>
-+<ul>
-+  <li><code>main_v2.py</code>: shell, rotas, views, regras.</li>
-+  <li><code>ui/views/login_view_v2.py</code>: autenticação/onboarding.</li>
-+  <li><code>core/ai_service_v2.py</code>: providers IA.</li>
-+  <li><code>scripts/build_android.ps1</code>: build APK/AAB.</li>
-+  <li><code>assets/</code>: ícones e logo.</li>
-+</ul>
- 
--## Setup de Desenvolvimento
--```bash
-+<h2 id="setup">⚙️ Setup Rápido</h2>
-+<pre>
- python -m venv .venv
- .venv\Scripts\pip install -r requirements.txt
--```
--
--Executar app (desktop):
--```bash
--.venv\Scripts\python run.py
--```
--
--Testes:
--```bash
--.venv\Scripts\python -m pytest
--```
-+.venv\Scripts\python run.py   # executa o app
-+.venv\Scripts\python -m pytest # roda testes
-+</pre>
- 
--## Build Android (APK)
--Pré-requisitos: Flutter SDK 3.38.x, JDK 17, Android SDK.
--```powershell
-+<h2 id="build-android">📱 Build Android (APK)</h2>
-+<p>Pré-requisitos: Flutter 3.38.x, JDK 17, Android SDK.</p>
-+<pre>
- powershell -ExecutionPolicy Bypass -File .\scripts\build_android.ps1 -Target apk
--```
--Artefato final: `build\apk\app-release.apk`.
-+</pre>
-+<p>Saída: <code>build\apk\app-release.apk</code></p>
- 
--## Configuração de IA
--1. Obtenha sua API key:
--   - Gemini: https://aistudio.google.com/app/apikey
--   - OpenAI: https://platform.openai.com/api-keys
--2. Cole a chave em **Configurações > IA**, escolha provider e modelo.
--3. Opcional: ative “Modo economia” para modelos mais baratos.
-+<h2 id="ia">🤖 Configurar IA (passo a passo rápido)</h2>
-+<ol>
-+  <li>Obtenha sua API key:
-+    <ul>
-+      <li><a href="https://aistudio.google.com/app/apikey">Gemini</a></li>
-+      <li><a href="https://platform.openai.com/api-keys">OpenAI</a></li>
-+    </ul>
-+  </li>
-+  <li>No app: <strong>Configurações &gt; IA</strong>, escolha provider e modelo.</li>
-+  <li>Cole a key, opcionalmente ative “Modo economia”.</li>
-+</ol>
- 
--## UX e Responsividade
--- Layout responsivo com `ResponsiveRow` e tolerância a múltiplos tamanhos de tela.
--- Temas claro/escuro persistentes.
--- Modo contínuo e recursos premium são controlados por estado do usuário.
-+<h2 id="ux">🖥️ UX e Responsividade</h2>
-+<ul>
-+  <li>Layout responsivo com <code>ResponsiveRow</code>, tema claro/escuro persistente.</li>
-+  <li>Modo contínuo e recursos premium controlados por estado do usuário.</li>
-+</ul>
- 
--## Segurança e Permissões
--- Apenas `INTERNET` no Android; uploads usam SAF do FilePicker.
--- Chaves de IA ficam armazenadas localmente.
-+<h2 id="seguranca">🔒 Segurança & Permissões</h2>
-+<ul>
-+  <li>Android: apenas <code>INTERNET</code>; uploads usam SAF do FilePicker.</li>
-+  <li>Chaves de IA armazenadas localmente.</li>
-+</ul>
- 
--## Roadmap Curto
--- Migrar warning do `google.genai` para novas versões.
--- Melhorar onboarding visual e telemetria opcional.
--- Exportar flashcards/quiz em CSV/JSON.
-+<h2 id="roadmap">🛣️ Roadmap Curto</h2>
-+<ul>
-+  <li>Mitigar DeprecationWarning do <code>google.genai</code>.</li>
-+  <li>Onboarding visual aprimorado e telemetria opt-in.</li>
-+  <li>Exportar flashcards/quiz para CSV/JSON.</li>
-+</ul>
- 
--## Suporte
--Abra uma issue no GitHub com descrição clara e passos para reproduzir. Pull requests são bem-vindos.
-+<h2 id="suporte">🤝 Suporte</h2>
-+<p>Abra uma issue no GitHub com passos claros para reproduzir. PRs são bem-vindos.</p>
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Quiz Vance App — README</title>
+</head>
+
+<body>
+  <div align="center">
+    <img src="assets/logo_quizvance.png" alt="Quiz Vance Logo" width="220" />
+    <h1>Quiz Vance App</h1>
+    <h3>Plataforma Inteligente de Estudos Assistida por IA</h3>
+    <p><em>Questões • Flashcards • Planos Estratégicos • Android &amp; Desktop</em></p>
+
+    <p>
+      <a href="#visao-geral"><strong>Visão Geral</strong></a> ·
+      <a href="#proposta-de-valor"><strong>Proposta de Valor</strong></a> ·
+      <a href="#arquitetura"><strong>Arquitetura</strong></a> ·
+      <a href="#estrutura"><strong>Estrutura</strong></a> ·
+      <a href="#ambiente"><strong>Setup</strong></a> ·
+      <a href="#android"><strong>Build Android</strong></a> ·
+      <a href="#ia"><strong>Configurar IA</strong></a> ·
+      <a href="#ux"><strong>UX</strong></a> ·
+      <a href="#seguranca"><strong>Segurança</strong></a> ·
+      <a href="#roadmap"><strong>Roadmap</strong></a> ·
+      <a href="#contribuicao"><strong>Contribuição</strong></a> ·
+      <a href="#licenca"><strong>Licença</strong></a>
+    </p>
+  </div>
+
+  <hr />
+
+  <h2 id="visao-geral">📌 Visão Geral</h2>
+  <p>
+    O <strong>Quiz Vance App</strong> é uma plataforma multiplataforma de estudos assistida por Inteligência Artificial,
+    projetada para otimizar o aprendizado por meio de geração dinâmica de conteúdo educacional.
+  </p>
+  <p>
+    A aplicação integra geração de questões, criação inteligente de flashcards e planejamento semanal estratégico,
+    com foco em produtividade, retenção e escalabilidade técnica.
+  </p>
+  <p>
+    Desenvolvido em <strong>Python com Flet (Flutter under the hood)</strong>, o projeto foi arquitetado para suportar
+    expansão contínua, modularização e integração com múltiplos provedores de IA.
+  </p>
+
+  <h2 id="proposta-de-valor">🚀 Proposta de Valor</h2>
+  <ul>
+    <li>Geração instantânea de questões com feedback estruturado.</li>
+    <li>Modo prova com cronômetro e simulação realista.</li>
+    <li>Flashcards inteligentes com revisão ativa e registro de progresso.</li>
+    <li>Upload de materiais (PDF / TXT / MD) para personalização e biblioteca local.</li>
+    <li>Plano de estudos semanal gerado por IA, com foco em priorização.</li>
+    <li>Painel de estatísticas e acompanhamento de evolução.</li>
+    <li>Suporte a Android (APK) e Desktop.</li>
+    <li>Arquitetura preparada para crescimento.</li>
+  </ul>
+
+  <h2 id="arquitetura">🧠 Arquitetura Técnica</h2>
+
+  <h3>Stack Principal</h3>
+  <table border="1" cellpadding="8" cellspacing="0">
+    <thead>
+      <tr>
+        <th align="left">Camada</th>
+        <th align="left">Tecnologia</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Interface</td>
+        <td>Flet 0.80.x (Flutter engine)</td>
+      </tr>
+      <tr>
+        <td>Linguagem</td>
+        <td>Python 3.14</td>
+      </tr>
+      <tr>
+        <td>IA</td>
+        <td>Google Gemini (<code>google-genai</code>) + OpenAI (<code>openai</code>)</td>
+      </tr>
+      <tr>
+        <td>Persistência</td>
+        <td>SQLite</td>
+      </tr>
+      <tr>
+        <td>Build Mobile</td>
+        <td>Flet Build + Flutter SDK</td>
+      </tr>
+      <tr>
+        <td>Testes</td>
+        <td>Pytest</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="estrutura">🏗 Estrutura do Projeto</h2>
+  <pre><code>Quiz Vance App/
+│
+├── main_v2.py                 # Shell principal, rotas e regras
+├── run.py                     # Entry point da aplicação
+├── core/
+│   ├── ai_service_v2.py       # Camada de integração com IA
+│   └── database_v2.py         # Persistência SQLite
+├── ui/views/
+│   └── login_view_v2.py       # Autenticação e onboarding
+├── scripts/
+│   └── build_android.ps1      # Script de build APK/AAB
+└── assets/                    # Ícones e identidade visual
+</code></pre>
+
+  <p>
+    A arquitetura separa claramente as camadas de UI, domínio, integrações externas (IA) e persistência,
+    facilitando manutenção, testes e escalabilidade.
+  </p>
+
+  <h2 id="ambiente">⚙️ Ambiente de Desenvolvimento</h2>
+
+  <h3>1) Criar ambiente virtual</h3>
+  <pre><code>python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt</code></pre>
+
+  <h3>2) Executar aplicação (Desktop)</h3>
+  <pre><code>.venv\Scripts\python run.py</code></pre>
+
+  <h3>3) Executar testes</h3>
+  <pre><code>.venv\Scripts\python -m pytest</code></pre>
+
+  <h2 id="android">📱 Build Android</h2>
+
+  <h3>Pré-requisitos</h3>
+  <ul>
+    <li>Flutter SDK 3.38.x</li>
+    <li>JDK 17</li>
+    <li>Android SDK configurado</li>
+  </ul>
+
+  <h3>Gerar APK</h3>
+  <pre><code>powershell -ExecutionPolicy Bypass -File .\scripts\build_android.ps1 -Target apk</code></pre>
+
+  <p><strong>Artefato final:</strong> <code>build\apk\app-release.apk</code></p>
+
+  <h2 id="ia">🤖 Configuração de Inteligência Artificial</h2>
+  <p>
+    A aplicação suporta múltiplos provedores com estratégia de fallback, priorizando continuidade e custo-benefício.
+  </p>
+
+  <h3>Obtenha sua chave de API</h3>
+  <ul>
+    <li>Google Gemini → <a href="https://aistudio.google.com/app/apikey">aistudio.google.com/app/apikey</a></li>
+    <li>OpenAI → <a href="https://platform.openai.com/api-keys">platform.openai.com/api-keys</a></li>
+  </ul>
+
+  <h3>Configuração no App</h3>
+  <ol>
+    <li>Acesse <strong>Configurações → IA</strong>.</li>
+    <li>Selecione o provedor e o modelo.</li>
+    <li>Insira a API key.</li>
+    <li>(Opcional) Ative o modo econômico.</li>
+  </ol>
+
+  <p><em>Observação:</em> as chaves são armazenadas localmente.</p>
+
+  <h2 id="ux">🖥 UX &amp; Engenharia de Interface</h2>
+  <ul>
+    <li>Layout responsivo com <code>ResponsiveRow</code>.</li>
+    <li>Compatibilidade com múltiplas resoluções e densidades de tela.</li>
+    <li>Tema claro/escuro persistente.</li>
+    <li>Controle de recursos premium por estado do usuário.</li>
+    <li>Estrutura preparada para modularização futura.</li>
+  </ul>
+
+  <h2 id="seguranca">🔐 Segurança</h2>
+  <ul>
+    <li>Android: permissão restrita a <code>INTERNET</code>.</li>
+    <li>Uploads via SAF (Storage Access Framework).</li>
+    <li>Armazenamento local de chaves.</li>
+    <li>Sem dependência de backend próprio.</li>
+  </ul>
+
+  <h2 id="roadmap">📈 Roadmap Estratégico</h2>
+  <ul>
+    <li>Atualização para novas versões do <code>google.genai</code> e mitigação de avisos de depreciação.</li>
+    <li>Implementação de telemetria <em>opt-in</em>.</li>
+    <li>Exportação de quizzes e flashcards (CSV / JSON).</li>
+    <li>Suporte futuro a sincronização em nuvem.</li>
+    <li>Gamificação e métricas avançadas de retenção.</li>
+  </ul>
+
+  <h2 id="contribuicao">🤝 Contribuição</h2>
+  <p>Contribuições são bem-vindas.</p>
+  <ol>
+    <li>Faça um fork do repositório.</li>
+    <li>Crie uma branch para sua alteração.</li>
+    <li>Envie um Pull Request descrevendo claramente o impacto.</li>
+  </ol>
+  <p>Para issues, inclua passos objetivos para reprodução.</p>
+
+  <h2 id="licenca">📄 Licença</h2>
+  <p>Definir licença (MIT, Apache 2.0, etc.) conforme a estratégia do projeto.</p>
+
+  <hr />
+
+  <p>
+    <strong>Fonte:</strong> versão baseada e aprimorada a partir do arquivo existente.
+  </p>
+</body>
+</html>
