@@ -91,3 +91,25 @@ O app agora salva dados em diretorio gravavel automaticamente:
   - confira variaveis `ANDROID_SIGNING_*` antes de executar.
 - Erro de symlink/plugins no build:
   - habilite Developer Mode no Windows (`start ms-settings:developers`) e ative "Modo de desenvolvedor".
+
+## 8) Smoke Check pre-APK
+
+Antes de empacotar para beta, rode:
+
+```powershell
+python .\scripts\smoke_go_live.py
+```
+
+Opcional (valida backend online):
+
+```powershell
+python .\scripts\smoke_go_live.py --online --backend-url "https://quiz-vance-backend.fly.dev"
+python .\scripts\smoke_go_live.py --online --full --backend-url "https://quiz-vance-backend.fly.dev"
+```
+
+Observacao: o smoke online agora exige `GET /health/ready` por padrao.
+Para backend legado sem esse endpoint, use temporariamente:
+
+```powershell
+python .\scripts\smoke_go_live.py --online --allow-missing-ready --backend-url "https://quiz-vance-backend.fly.dev"
+```

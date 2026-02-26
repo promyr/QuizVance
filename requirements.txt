@@ -11,6 +11,8 @@ pypdf>=3.0.0
 
 # HTTP Requests
 requests>=2.31.0
+bcrypt>=4.1.2
+cryptography>=42.0.0
 
 # Optional: for better performance
 # python-dotenv  # Para gerenciar variáveis de ambiente

@@ -1,88 +1,153 @@
-<div align="center">
-  <img src="assets/logo_quizvance.png" alt="Quiz Vance" width="240" />
-  <h1>Quiz Vance App</h1>
-  <p>Estudo assistido por IA · Questões · Flashcards · Planos Semanais · Android & Desktop</p>
-  <a href="#destaques"><strong>Destaques</strong></a> ·
-  <a href="#stack">Stack</a> ·
-  <a href="#setup">Setup</a> ·
-  <a href="#build-android">Build Android</a> ·
-  <a href="#ia">Configurar IA</a> ·
-  <a href="#roadmap">Roadmap</a>
-</div>
+﻿# Quiz Vance App
 
-<hr/>
+Plataforma de estudo orientada por questoes, com IA aplicada, revisao espacada,
+flashcards e simulados. O projeto adota stack final Android (cliente em Flet)
+com backend de billing/entitlements em FastAPI integrado ao Mercado Pago.
 
-<h2 id="destaques">✨ Destaques</h2>
-<ul>
-  <li>Questões objetivas com feedback imediato e modo prova com cronômetro.</li>
-  <li>Flashcards gerados por IA, revisão ativa e registro de progresso.</li>
-  <li>Upload de PDF/TXT/MD para quizzes personalizados e biblioteca local.</li>
-  <li>Plano semanal com IA, estatísticas e tema claro/escuro persistente.</li>
-  <li>Build Android pronto via <code>flet build apk</code> (script incluso).</li>
-</ul>
+## Visao Geral
 
-<h2 id="stack">🧩 Stack Técnica</h2>
-<ul>
-  <li><strong>UI</strong>: Flet 0.80.x (Flutter under the hood).</li>
-  <li><strong>Linguagem</strong>: Python 3.14.</li>
-  <li><strong>IA</strong>: Google Gemini (<code>google-genai</code>) e OpenAI (<code>openai</code>), com fallback econômico.</li>
-  <li><strong>Banco local</strong>: SQLite (ver <code>core/database_v2.py</code>).</li>
-</ul>
+- Cliente Android com experiencia focada em estudo e revisao.
+- Motor de pratica com filtros avancados e fluxo de correcao.
+- Revisao inteligente (SRS), caderno de erros e cards de reforco.
+- Assinatura premium com reconciliacao automatica.
+- Operacao pronta para beta pago com checks de saude e smoke tests.
 
-<h2 id="estrutura">📂 Estrutura Rápida</h2>
-<ul>
-  <li><code>main_v2.py</code>: shell, rotas, views, regras.</li>
-  <li><code>ui/views/login_view_v2.py</code>: autenticação/onboarding.</li>
-  <li><code>core/ai_service_v2.py</code>: providers IA.</li>
-  <li><code>scripts/build_android.ps1</code>: build APK/AAB.</li>
-  <li><code>assets/</code>: ícones e logo.</li>
-</ul>
+## Rotas Principais do App
 
-<h2 id="setup">⚙️ Setup Rápido</h2>
-<pre>
+| Rota | Funcao |
+|---|---|
+| `/home` | Dashboard e atalhos principais |
+| `/quiz` | Resolucao e correcao de questoes |
+| `/revisao` | Revisao diaria, caderno de erros e marcadas |
+| `/flashcards` | Estudo por cards (inclui fluxo continuo) |
+| `/mais` | Configuracoes, suporte e atalhos |
+| `/simulado` | Simulados com politica Free/Premium |
+
+## Arquitetura
+
+### Cliente (Flet)
+
+- Ponto de entrada: `main_v2.py`
+- Bootstrap de execucao: `run.py`
+- UI e Design System: `ui/`
+- Regras de negocio: `core/services/` e `services/`
+- Persistencia local: `core/database_v2.py`
+- Integracao com backend: `core/backend_client.py`
+- Stack final de distribuicao: Android.
+
+### Backend (FastAPI)
+
+- Pasta: `backend/`
+- App principal: `backend/app/main.py`
+- Billing e webhooks Mercado Pago
+- Entitlements premium e reconciliacao idempotente
+- Deploy produtivo em Fly.io
+
+## Estrutura do Repositorio
+
+| Caminho | Descricao |
+|---|---|
+| `main_v2.py` | Aplicacao cliente (UI, navegacao e fluxos de estudo) |
+| `run.py` | Inicializacao do app local |
+| `core/` | Servicos, repositorios e infraestrutura do cliente |
+| `services/` | Servicos complementares de dominio |
+| `ui/` | Componentes visuais e views |
+| `backend/` | API de billing, checkout e webhooks |
+| `scripts/` | Build, smoke e automacoes operacionais |
+| `docs/` | Documentacao legal e operacional |
+| `tests/` | Testes automatizados |
+
+## Requisitos
+
+- Python 3.12+
+- Pip atualizado
+- Para build Android:
+  - Flutter SDK
+  - Java 17+
+  - Android SDK
+  - `flet-cli`
+
+## Execucao Local do Cliente
+
+```powershell
+python run.py
+```
+
+Opcional (ambiente virtual):
+
+```powershell
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python run.py   # executa o app
-.venv\Scripts\python -m pytest # roda testes
-</pre>
+.venv\Scripts\activate
+pip install -r requirements.txt
+python run.py
+```
 
-<h2 id="build-android">📱 Build Android (APK)</h2>
-<p>Pré-requisitos: Flutter 3.38.x, JDK 17, Android SDK.</p>
-<pre>
+## Configuracao de Ambiente
+
+Variaveis relevantes para execucao integrada:
+
+- `BACKEND_URL`
+- `APP_BACKEND_SECRET`
+- `GEMINI_API_KEY`
+- `OPENAI_API_KEY`
+
+Exemplo (PowerShell):
+
+```powershell
+$env:BACKEND_URL="https://quiz-vance-backend.fly.dev"
+$env:APP_BACKEND_SECRET="seu_segredo"
+python run.py
+```
+
+## Build e Distribuicao
+
+### Android (APK/AAB)
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build_android.ps1 -Target apk
-</pre>
-<p>Saída: <code>build\apk\app-release.apk</code></p>
+```
 
-<h2 id="ia">🤖 Configurar IA (passo a passo rápido)</h2>
-<ol>
-  <li>Obtenha sua API key:
-    <ul>
-      <li><a href="https://aistudio.google.com/app/apikey">Gemini</a></li>
-      <li><a href="https://platform.openai.com/api-keys">OpenAI</a></li>
-    </ul>
-  </li>
-  <li>No app: <strong>Configurações &gt; IA</strong>, escolha provider e modelo.</li>
-  <li>Cole a key, opcionalmente ative “Modo economia”.</li>
-</ol>
+Para detalhes de assinatura e AAB, consulte `BUILD_INSTALLERS.md`.
 
-<h2 id="ux">🖥️ UX e Responsividade</h2>
-<ul>
-  <li>Layout responsivo com <code>ResponsiveRow</code>, tema claro/escuro persistente.</li>
-  <li>Modo contínuo e recursos premium controlados por estado do usuário.</li>
-</ul>
+## Qualidade e Validacao
 
-<h2 id="seguranca">🔒 Segurança & Permissões</h2>
-<ul>
-  <li>Android: apenas <code>INTERNET</code>; uploads usam SAF do FilePicker.</li>
-  <li>Chaves de IA armazenadas localmente.</li>
-</ul>
+### Testes automatizados
 
-<h2 id="roadmap">🛣️ Roadmap Curto</h2>
-<ul>
-  <li>Mitigar DeprecationWarning do <code>google.genai</code>.</li>
-  <li>Onboarding visual aprimorado e telemetria opt-in.</li>
-  <li>Exportar flashcards/quiz para CSV/JSON.</li>
-</ul>
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+```
 
-<h2 id="suporte">🤝 Suporte</h2>
-<p>Abra uma issue no GitHub com passos claros para reproduzir. PRs são bem-vindos.</p>
+### Smoke tecnico local
+
+```powershell
+python .\scripts\smoke_go_live.py
+```
+
+### Smoke online (producao)
+
+```powershell
+python .\scripts\smoke_go_live.py --online --backend-url "https://quiz-vance-backend.fly.dev"
+python .\scripts\smoke_go_live.py --online --full --backend-url "https://quiz-vance-backend.fly.dev"
+```
+
+## Operacao e Beta
+
+Documentos oficiais do ciclo beta:
+
+- Checklist de go-live: `docs/GO_LIVE_CHECKLIST.md`
+- Validacao manual: `docs/MANUAL_VALIDATION_BETA.md`
+- Checklist de runtime UI: `docs/UI_RUNTIME_CHECKLIST.md`
+- Runbook operacional: `docs/OPERATIONS_RUNBOOK.md`
+- Billing backend: `backend/README.md`
+
+## Seguranca e Confiabilidade
+
+- Ativacao direta de plano bloqueada no backend.
+- Webhook com idempotencia e reconciliacao segura.
+- Check de saude `/health/ready` em producao.
+- Tuning de runtime para reduzir delay e instabilidade no beta.
+
+## Estado Atual
+
+Projeto pronto para beta controlado, com fluxo de pagamento real validado,
+conta premium ativada automaticamente e trilha de operacao documentada.

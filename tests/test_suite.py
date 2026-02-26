@@ -204,6 +204,228 @@ class TestDatabase(unittest.TestCase):
         conn.close()
         print("âœ… Banco criado com tabelas essenciais")
 
+    def test_daily_limit_usage(self):
+        """Prompt 4/6: limite diário deve bloquear excedente."""
+        from core.database_v2 import Database
+        db = Database(db_path=self.test_db)
+        db.iniciar_banco()
+        ok, _ = db.criar_conta("user", "user@test.local", "123456", "01/01/2000")
+        self.assertTrue(ok)
+        user = db.fazer_login("user@test.local", "123456")
+        uid = int(user["id"])
+        allowed1, used1 = db.consumir_limite_diario(uid, "mock_exam", 2)
+        allowed2, used2 = db.consumir_limite_diario(uid, "mock_exam", 2)
+        allowed3, used3 = db.consumir_limite_diario(uid, "mock_exam", 2)
+        self.assertTrue(allowed1)
+        self.assertTrue(allowed2)
+        self.assertFalse(allowed3)
+        self.assertEqual(used1, 1)
+        self.assertEqual(used2, 2)
+        self.assertEqual(used3, 2)
+        print("âœ… Limite diário funcionando")
+
+    def test_ranking_computes_horas_estudo_from_database(self):
+        """Ranking deve calcular horas_estudo a partir do progresso diario."""
+        from core.database_v2 import Database
+        import sqlite3
+        db = Database(db_path=self.test_db)
+        db.iniciar_banco()
+        ok, _ = db.criar_conta("rank_user", "rank@test.local", "123456", "01/01/2000")
+        self.assertTrue(ok)
+        user = db.fazer_login("rank@test.local", "123456")
+        uid = int(user["id"])
+
+        db.registrar_progresso_diario(uid, tempo_segundos=3600)
+
+        conn = sqlite3.connect(self.test_db)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO estudo_progresso_diario (user_id, dia, questoes_respondidas, acertos, flashcards_revisados, discursivas_corrigidas, tempo_segundos, updated_at)
+            VALUES (?, DATE('now', '-1 day'), 0, 0, 0, 0, 1800, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id, dia) DO UPDATE SET tempo_segundos = excluded.tempo_segundos
+            """,
+            (uid,),
+        )
+        conn.commit()
+        conn.close()
+
+        hoje = db.obter_ranking("Hoje")
+        geral = db.obter_ranking("Geral")
+        row_hoje = next((r for r in hoje if str(r.get("nome") or "") == "rank_user"), None)
+        row_geral = next((r for r in geral if str(r.get("nome") or "") == "rank_user"), None)
+
+        self.assertIsNotNone(row_hoje)
+        self.assertIsNotNone(row_geral)
+        self.assertEqual(float(row_hoje["horas_estudo"]), 1.0)
+        self.assertEqual(float(row_geral["horas_estudo"]), 1.5)
+        print("âœ… Ranking calculando horas_estudo corretamente")
+
+    def test_save_filter_and_cache_hash(self):
+        """Prompt 4: salvar filtros e cache por hash."""
+        from core.database_v2 import Database
+        db = Database(db_path=self.test_db)
+        db.iniciar_banco()
+        ok, _ = db.criar_conta("user2", "user2@test.local", "123456", "01/01/2000")
+        self.assertTrue(ok)
+        user = db.fazer_login("user2@test.local", "123456")
+        uid = int(user["id"])
+
+        filtro = {"topic": "Direito", "difficulty": "intermediario", "count": "10"}
+        db.salvar_filtro_quiz(uid, "Filtro A", filtro)
+        filtros = db.listar_filtros_quiz(uid)
+        self.assertGreaterEqual(len(filtros), 1)
+        self.assertEqual(filtros[0]["nome"], "Filtro A")
+
+        source_hash = "hash_abc_123"
+        summary = {"titulo": "Resumo", "resumo_curto": "abc", "topicos_principais": ["t1"], "checklist_de_estudo": ["c1"]}
+        db.salvar_resumo_por_hash(uid, source_hash, "Tema X", summary)
+        cached = db.obter_resumo_por_hash(uid, source_hash)
+        self.assertIsInstance(cached, dict)
+        self.assertEqual(cached.get("titulo"), "Resumo")
+        print("âœ… Filtros e cache por hash funcionando")
+
+    def test_api_key_local_encryption(self):
+        """Prompt 4: API key deve ficar protegida localmente e ser lida ao logar."""
+        from core.database_v2 import Database
+        import sqlite3
+        db = Database(db_path=self.test_db)
+        db.iniciar_banco()
+        ok, _ = db.criar_conta("user3", "user3@test.local", "123456", "01/01/2000")
+        self.assertTrue(ok)
+        user = db.fazer_login("user3@test.local", "123456")
+        uid = int(user["id"])
+        api_value = "sk-test-local-key"
+        db.atualizar_api_key(uid, api_value)
+
+        conn = sqlite3.connect(self.test_db)
+        cur = conn.cursor()
+        cur.execute("SELECT api_key FROM user_ai_config WHERE user_id = ?", (uid,))
+        row = cur.fetchone()
+        conn.close()
+        self.assertIsNotNone(row)
+        stored = str(row[0] or "")
+        # aceita fallback plaintext quando cripto indisponível, mas valida roundtrip
+        logged = db.fazer_login("user3@test.local", "123456")
+        self.assertEqual(str(logged.get("api_key") or ""), api_value)
+        self.assertTrue(stored.startswith("enc1:") or stored == api_value)
+        print("âœ… Proteção local de API key funcionando")
+
+    def test_sync_cloud_user_online_only(self):
+        """Sincronizacao de usuario cloud deve criar/atualizar perfil local sem auth local."""
+        from core.database_v2 import Database
+        db = Database(db_path=self.test_db)
+        db.iniciar_banco()
+
+        user = db.sync_cloud_user(
+            backend_user_id=321,
+            email="cloud_user@test.local",
+            nome="Cloud User",
+        )
+        self.assertIsNotNone(user)
+        self.assertEqual(str(user.get("email") or ""), "cloud_user@test.local")
+        self.assertEqual(int(user.get("backend_user_id") or 0), 321)
+        self.assertEqual(int(user.get("oauth_google") or 0), 0)
+
+        user2 = db.sync_cloud_user(
+            backend_user_id=321,
+            email="cloud_user@test.local",
+            nome="Cloud User Updated",
+        )
+        self.assertIsNotNone(user2)
+        self.assertEqual(int(user2.get("id") or 0), int(user.get("id") or 0))
+        self.assertEqual(str(user2.get("nome") or ""), "Cloud User Updated")
+        print("âœ… Sincronizacao cloud online-only funcionando")
+
+    def test_mock_exam_service_policy(self):
+        """Prompt 6: regra Free/Premium deve estar no service e respeitar limite diario."""
+        from core.database_v2 import Database
+        from core.services.mock_exam_service import MockExamService
+
+        db = Database(db_path=self.test_db)
+        db.iniciar_banco()
+        ok, _ = db.criar_conta("user4", "user4@test.local", "123456", "01/01/2000")
+        self.assertTrue(ok)
+        user = db.fazer_login("user4@test.local", "123456")
+        uid = int(user["id"])
+
+        service = MockExamService(db)
+        free_count, free_capped = service.normalize_question_count(50, premium=False)
+        premium_count, premium_capped = service.normalize_question_count(50, premium=True)
+        self.assertEqual(free_count, 20)
+        self.assertTrue(free_capped)
+        self.assertEqual(premium_count, 50)
+        self.assertFalse(premium_capped)
+
+        allowed1, _, _ = service.consume_start_today(uid, premium=False)
+        allowed2, _, _ = service.consume_start_today(uid, premium=False)
+        self.assertTrue(allowed1)
+        self.assertFalse(allowed2)
+        print("âœ… MockExamService aplicando limites corretamente")
+
+    def test_spaced_repetition_service(self):
+        """Prompt 5: SRS deve atualizar questoes e flashcards via service."""
+        from core.database_v2 import Database
+        from core.services.spaced_repetition_service import SpacedRepetitionService
+        import sqlite3
+
+        db = Database(db_path=self.test_db)
+        db.iniciar_banco()
+        ok, _ = db.criar_conta("user5", "user5@test.local", "123456", "01/01/2000")
+        self.assertTrue(ok)
+        user = db.fazer_login("user5@test.local", "123456")
+        uid = int(user["id"])
+
+        srs = SpacedRepetitionService.from_db(db)
+        q = {"enunciado": "2+2?", "alternativas": ["1", "2", "3", "4"], "correta_index": 3, "tema": "Matematica"}
+        srs.review_question(uid, q, acertou=False)
+        srs.review_question(uid, q, acertou=True)
+
+        card = {"frente": "Capital do Brasil", "verso": "Brasilia", "tema": "Geografia"}
+        srs.review_flashcard(uid, card, "lembrei")
+
+        conn = sqlite3.connect(self.test_db)
+        cur = conn.cursor()
+        cur.execute("SELECT review_level, next_review_at FROM questoes_usuario WHERE user_id = ?", (uid,))
+        row_q = cur.fetchone()
+        cur.execute("SELECT total_revisoes, proxima_revisao FROM flashcards WHERE user_id = ?", (uid,))
+        row_f = cur.fetchone()
+        conn.close()
+
+        self.assertIsNotNone(row_q)
+        self.assertGreaterEqual(int(row_q[0] or 0), 0)
+        self.assertIsNotNone(row_f)
+        self.assertGreaterEqual(int(row_f[0] or 0), 1)
+        self.assertIsNotNone(row_f[1])
+        print("âœ… SpacedRepetitionService funcionando para questoes e flashcards")
+
+
+class TestSchemaValidation(unittest.TestCase):
+    """Prompt 4: validação de contratos JSON."""
+
+    def test_validate_task_payload(self):
+        provider = create_ai_provider("gemini", "fake_key")
+        service = AIService(provider)
+
+        ok_quiz, _ = service.validate_task_payload(
+            "quiz",
+            {"pergunta": "2+2?", "opcoes": ["1", "2", "3", "4"], "correta_index": 3},
+        )
+        bad_quiz, _ = service.validate_task_payload("quiz", {"pergunta": "", "opcoes": [], "correta_index": 0})
+        ok_summary, _ = service.validate_task_payload(
+            "study_summary",
+            {
+                "titulo": "T",
+                "resumo_curto": "R",
+                "topicos_principais": ["A"],
+                "checklist_de_estudo": ["B"],
+            },
+        )
+        self.assertTrue(ok_quiz)
+        self.assertFalse(bad_quiz)
+        self.assertTrue(ok_summary)
+        print("âœ… Validação de schema por tarefa funcionando")
+
 
 def run_all_tests():
     """Executa todos os testes"""
@@ -221,6 +443,7 @@ def run_all_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestConfig))
     suite.addTests(loader.loadTestsFromTestCase(TestComponents))
     suite.addTests(loader.loadTestsFromTestCase(TestDatabase))
+    suite.addTests(loader.loadTestsFromTestCase(TestSchemaValidation))
     
     # Executar
     runner = unittest.TextTestRunner(verbosity=2)

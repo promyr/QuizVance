@@ -81,4 +81,3 @@ except Exception as ex:
     print(f"[ERRO] Falha ao iniciar app: {ex}")
     traceback.print_exc()
     sys.exit(1)
-
