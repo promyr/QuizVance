@@ -21,7 +21,7 @@ def _build_library_body(state, navigate, dark: bool):
             file_list.controls.append(
                 ft.Container(
                     padding=20,
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment(0, 0),
                     content=ft.Column([
                         ft.Icon(ft.Icons.LIBRARY_ADD, size=48, color=_color("texto_sec", dark)),
                         ft.Text("Sua biblioteca esta vazia", color=_color("texto_sec", dark)),

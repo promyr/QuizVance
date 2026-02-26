@@ -3,19 +3,75 @@ import json
 import os
 import urllib.request
 import urllib.error
+import threading
+import time
 from typing import Optional, Dict, Any
 
 
 class BackendClient:
     def __init__(self):
-        self.base_url = (os.getenv("BACKEND_URL") or "").strip().rstrip("/")
+        base = (
+            os.getenv("BACKEND_URL")
+            or os.getenv("QUIZ_VANCE_BACKEND_URL")
+            or os.getenv("BACKEND_PUBLIC_URL")
+            or "https://quiz-vance-backend.fly.dev"
+        )
+        self.base_url = str(base or "").strip().rstrip("/")
         self.app_secret = (os.getenv("APP_BACKEND_SECRET") or "").strip()
-        self.timeout = float(os.getenv("BACKEND_TIMEOUT", "6"))
+        self.timeout = float(os.getenv("BACKEND_TIMEOUT", "3.2"))
+        self.plan_timeout = float(os.getenv("BACKEND_PLAN_TIMEOUT", "1.8"))
+        self._http_retries = max(0, int(os.getenv("BACKEND_HTTP_RETRIES", "1") or 1))
+        self._plan_cache_ttl_s = max(0.0, float(os.getenv("BACKEND_PLAN_CACHE_TTL", "8")))
+        self._plan_cache: Dict[int, tuple[float, Dict[str, Any]]] = {}
+        self._plan_cache_lock = threading.Lock()
 
     def enabled(self) -> bool:
-        return bool(self.base_url)
+        return bool(self.base_url and self.base_url.startswith("http"))
 
-    def _request(self, method: str, path: str, payload: Optional[Dict] = None) -> Dict[str, Any]:
+    def invalidate_plan_cache(self, user_id: Optional[int] = None) -> None:
+        with self._plan_cache_lock:
+            if user_id is None:
+                self._plan_cache.clear()
+                return
+            self._plan_cache.pop(int(user_id), None)
+
+    def _get_cached_plan(self, user_id: int) -> Optional[Dict[str, Any]]:
+        if self._plan_cache_ttl_s <= 0:
+            return None
+        now = time.monotonic()
+        with self._plan_cache_lock:
+            cached = self._plan_cache.get(int(user_id))
+            if not cached:
+                return None
+            ts, payload = cached
+            if (now - ts) > self._plan_cache_ttl_s:
+                self._plan_cache.pop(int(user_id), None)
+                return None
+            return dict(payload)
+
+    def _get_cached_plan_stale(self, user_id: int) -> Optional[Dict[str, Any]]:
+        with self._plan_cache_lock:
+            cached = self._plan_cache.get(int(user_id))
+            if not cached:
+                return None
+            _ts, payload = cached
+            return dict(payload)
+
+    def _set_cached_plan(self, user_id: int, payload: Dict[str, Any]) -> None:
+        if self._plan_cache_ttl_s <= 0:
+            return
+        with self._plan_cache_lock:
+            self._plan_cache[int(user_id)] = (time.monotonic(), dict(payload or {}))
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: Optional[Dict] = None,
+        *,
+        timeout: Optional[float] = None,
+        retries: Optional[int] = None,
+    ) -> Dict[str, Any]:
         if not self.enabled():
             raise RuntimeError("backend_disabled")
         url = f"{self.base_url}{path}"
@@ -25,10 +81,56 @@ class BackendClient:
             headers["X-App-Secret"] = self.app_secret
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            raw = resp.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
+        timeout_s = self.timeout if timeout is None else max(0.4, float(timeout))
+        attempts = (self._http_retries if retries is None else max(0, int(retries))) + 1
+        last_err: Optional[Exception] = None
+
+        for attempt in range(1, attempts + 1):
+            req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
+            try:
+                with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                    raw = resp.read().decode("utf-8")
+                    return json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as e:
+                detail = ""
+                code = int(getattr(e, "code", 0) or 0)
+                try:
+                    raw = (e.read() or b"").decode("utf-8", errors="ignore")
+                    data_err = json.loads(raw) if raw else {}
+                    detail = str(data_err.get("detail") or data_err.get("message") or "")
+                except Exception:
+                    detail = ""
+                msg = detail or f"HTTP {getattr(e, 'code', 'erro')}"
+                last_err = RuntimeError(msg)
+                # Retry apenas para erros transientes.
+                if code in {408, 429, 500, 502, 503, 504} and attempt < attempts:
+                    time.sleep(0.12 * attempt)
+                    continue
+                raise last_err from e
+            except urllib.error.URLError as e:
+                last_err = RuntimeError(f"backend_unreachable: {e.reason}")
+                if attempt < attempts:
+                    time.sleep(0.12 * attempt)
+                    continue
+                raise last_err from e
+
+        if last_err is not None:
+            raise last_err
+        raise RuntimeError("backend_request_failed")
+
+    def register(self, name: str, email_id: str, password: str) -> Dict[str, Any]:
+        return self._request(
+            "POST",
+            "/auth/register",
+            {"name": str(name or ""), "email_id": str(email_id or "").lower(), "password": str(password or "")},
+        )
+
+    def login(self, email_id: str, password: str) -> Dict[str, Any]:
+        return self._request(
+            "POST",
+            "/auth/login",
+            {"email_id": str(email_id or "").lower(), "password": str(password or "")},
+        )
 
     def upsert_user(self, user_id: int, name: str, email_id: str) -> Dict[str, Any]:
         return self._request(
@@ -37,11 +139,104 @@ class BackendClient:
             {"user_id": int(user_id), "name": str(name or ""), "email_id": str(email_id or "").lower()},
         )
 
-    def get_plan(self, user_id: int) -> Dict[str, Any]:
-        return self._request("GET", f"/plans/me/{int(user_id)}")
+    def get_user_settings(self, user_id: int) -> Dict[str, Any]:
+        uid = int(user_id)
+        return self._request("GET", f"/internal/user-settings/{uid}", timeout=self.plan_timeout, retries=0)
 
-    def activate_plan(self, user_id: int, plan_code: str) -> Dict[str, Any]:
-        return self._request("POST", "/plans/activate", {"user_id": int(user_id), "plan_code": str(plan_code)})
+    def upsert_user_settings(
+        self,
+        user_id: int,
+        provider: str,
+        model: str,
+        api_key: Optional[str],
+        economia_mode: bool,
+        telemetry_opt_in: bool,
+    ) -> Dict[str, Any]:
+        return self._request(
+            "POST",
+            "/internal/user-settings",
+            {
+                "user_id": int(user_id),
+                "provider": str(provider or "gemini").strip().lower(),
+                "model": str(model or "gemini-2.5-flash").strip(),
+                "api_key": (str(api_key).strip() if api_key is not None else None),
+                "economia_mode": bool(economia_mode),
+                "telemetry_opt_in": bool(telemetry_opt_in),
+            },
+        )
+
+    def get_plan(self, user_id: int) -> Dict[str, Any]:
+        uid = int(user_id)
+        cached = self._get_cached_plan(uid)
+        if cached is not None:
+            return cached
+        stale = self._get_cached_plan_stale(uid)
+        try:
+            resp = self._request("GET", f"/plans/me/{uid}", timeout=self.plan_timeout, retries=0)
+            if isinstance(resp, dict):
+                self._set_cached_plan(uid, resp)
+            return resp
+        except Exception:
+            if stale is not None:
+                return stale
+            raise
+
+    def start_checkout(
+        self,
+        user_id: int,
+        plan_code: str,
+        provider: str = "mercadopago",
+        name: str = "",
+        email_id: str = "",
+    ) -> Dict[str, Any]:
+        uid = int(user_id)
+        return self._request(
+            "POST",
+            "/billing/checkout/start",
+            {
+                "user_id": uid,
+                "plan_code": str(plan_code),
+                "provider": str(provider or "manual"),
+                "name": str(name or ""),
+                "email_id": str(email_id or "").lower(),
+            },
+        )
+
+    def confirm_checkout(
+        self,
+        user_id: int,
+        checkout_id: str,
+        auth_token: str,
+        tx_id: str,
+        provider: str = "mercadopago",
+    ) -> Dict[str, Any]:
+        uid = int(user_id)
+        resp = self._request(
+            "POST",
+            "/billing/checkout/confirm",
+            {
+                "user_id": uid,
+                "checkout_id": str(checkout_id or ""),
+                "auth_token": str(auth_token or ""),
+                "tx_id": str(tx_id or ""),
+                "provider": str(provider or "manual"),
+            },
+        )
+        self.invalidate_plan_cache(uid)
+        return resp
+
+    def reconcile_checkout(self, user_id: int, checkout_id: str) -> Dict[str, Any]:
+        uid = int(user_id)
+        resp = self._request(
+            "POST",
+            "/billing/checkout/reconcile",
+            {
+                "user_id": uid,
+                "checkout_id": str(checkout_id or ""),
+            },
+        )
+        self.invalidate_plan_cache(uid)
+        return resp
 
     def consume_usage(self, user_id: int, feature_key: str, limit_per_day: int) -> Dict[str, Any]:
         return self._request(

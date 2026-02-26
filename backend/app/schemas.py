@@ -27,6 +27,27 @@ class ActivatePlanIn(BaseModel):
     plan_code: str
 
 
+class CheckoutStartIn(BaseModel):
+    user_id: int
+    plan_code: str
+    provider: str = "mercadopago"
+    name: str = ""
+    email_id: str = ""
+
+
+class CheckoutConfirmIn(BaseModel):
+    user_id: int
+    checkout_id: str
+    auth_token: str
+    tx_id: str
+    provider: str = "mercadopago"
+
+
+class CheckoutReconcileIn(BaseModel):
+    user_id: int
+    checkout_id: str
+
+
 class ConsumeUsageIn(BaseModel):
     user_id: int
     feature_key: str
@@ -48,3 +69,21 @@ class UpsertUserIn(BaseModel):
     user_id: int
     name: str
     email_id: str
+
+
+class UserSettingsOut(BaseModel):
+    user_id: int
+    provider: str = "gemini"
+    model: str = "gemini-2.5-flash"
+    api_key: str | None = None
+    economia_mode: bool = False
+    telemetry_opt_in: bool = False
+
+
+class UpsertUserSettingsIn(BaseModel):
+    user_id: int
+    provider: str = "gemini"
+    model: str = "gemini-2.5-flash"
+    api_key: str | None = None
+    economia_mode: bool = False
+    telemetry_opt_in: bool = False

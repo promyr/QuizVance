@@ -1,5 +1,5 @@
 from datetime import datetime, date
-from sqlalchemy import String, Integer, DateTime, ForeignKey, UniqueConstraint, Text
+from sqlalchemy import String, Integer, DateTime, ForeignKey, UniqueConstraint, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 
@@ -50,6 +50,43 @@ class Payment(Base):
     status: Mapped[str] = mapped_column(String(30), default="pending")
     paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (
+        Index("ix_payments_provider_tx", "provider", "provider_tx_id"),
+        Index("ix_payments_user_created", "user_id", "created_at"),
+    )
+
+
+class CheckoutSession(Base):
+    __tablename__ = "checkout_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    checkout_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    plan_code: Mapped[str] = mapped_column(String(30), default="premium_30")
+    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    currency: Mapped[str] = mapped_column(String(12), default="BRL")
+    provider: Mapped[str] = mapped_column(String(50), default="manual")
+    auth_token: Mapped[str] = mapped_column(String(190), nullable=False)
+    payment_code: Mapped[str] = mapped_column(String(190), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="pending")
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (
+        Index("ix_checkout_user_created", "user_id", "created_at"),
+        Index("ix_checkout_status", "status"),
+    )
+
+
+class UserSettings(Base):
+    __tablename__ = "user_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(40), default="gemini")
+    model: Mapped[str] = mapped_column(String(120), default="gemini-2.5-flash")
+    api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    economia_mode: Mapped[int] = mapped_column(Integer, default=0)
+    telemetry_opt_in: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class WebhookEvent(Base):

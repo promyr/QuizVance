@@ -12,12 +12,29 @@ import sqlite3
 import datetime
 import json
 import hashlib
-from typing import Optional, Dict, List, Tuple
+import hmac
+import os
+import base64
+from typing import Optional, Dict, List, Tuple, Any
 from core.app_paths import ensure_runtime_dirs, get_db_path
+
+try:
+    import bcrypt as _bcrypt  # type: ignore
+except Exception:
+    _bcrypt = None
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken  # type: ignore
+except Exception:
+    Fernet = None
+    InvalidToken = Exception
 
 
 class Database:
     """Gerenciador de banco de dados SQLite"""
+    _PWD_SCHEME = "pbkdf2_sha256"
+    _PWD_ITERS = 210_000
+    _API_KEY_PREFIX = "enc1:"
     
     def __init__(self, db_path: Optional[str] = None):
         ensure_runtime_dirs()
@@ -26,6 +43,114 @@ class Database:
     def conectar(self):
         """Cria conexÃ£o com banco"""
         return sqlite3.connect(self.db_path, check_same_thread=False)
+
+    def _api_key_cipher(self):
+        if Fernet is None:
+            return None
+        seed = "|".join(
+            [
+                str(os.getenv("COMPUTERNAME") or ""),
+                str(os.getenv("USERNAME") or ""),
+                str(self.db_path or ""),
+            ]
+        ).encode("utf-8", errors="ignore")
+        salt = b"quizvance-local-api-key-salt-v1"
+        raw_key = hashlib.pbkdf2_hmac("sha256", seed, salt, 180_000, dklen=32)
+        return Fernet(base64.urlsafe_b64encode(raw_key))
+
+    def _encrypt_api_key(self, value: Optional[str]) -> Optional[str]:
+        plain = str(value or "").strip()
+        if not plain:
+            return None
+        if plain.startswith(self._API_KEY_PREFIX):
+            return plain
+        cipher = self._api_key_cipher()
+        if cipher is None:
+            return plain
+        try:
+            token = cipher.encrypt(plain.encode("utf-8")).decode("utf-8")
+            return f"{self._API_KEY_PREFIX}{token}"
+        except Exception:
+            return plain
+
+    def _decrypt_api_key(self, value: Optional[str]) -> Optional[str]:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        if not raw.startswith(self._API_KEY_PREFIX):
+            return raw
+        token = raw[len(self._API_KEY_PREFIX):].strip()
+        if not token:
+            return None
+        cipher = self._api_key_cipher()
+        if cipher is None:
+            return None
+        try:
+            return cipher.decrypt(token.encode("utf-8")).decode("utf-8")
+        except InvalidToken:
+            return None
+        except Exception:
+            return None
+
+    def _legacy_sha256(self, senha: str) -> str:
+        return hashlib.sha256((senha or "").encode()).hexdigest()
+
+    def _is_legacy_sha256_hash(self, value: str) -> bool:
+        v = str(value or "").strip().lower()
+        if len(v) != 64:
+            return False
+        return all(ch in "0123456789abcdef" for ch in v)
+
+    def _hash_password(self, senha: str) -> str:
+        """Hash seguro de senha (bcrypt quando disponível; fallback PBKDF2)."""
+        pwd = (senha or "").encode("utf-8")
+        if _bcrypt is not None:
+            try:
+                return _bcrypt.hashpw(pwd, _bcrypt.gensalt(rounds=12)).decode("utf-8")
+            except Exception:
+                pass
+        salt = os.urandom(16)
+        digest = hashlib.pbkdf2_hmac("sha256", pwd, salt, self._PWD_ITERS)
+        salt_b64 = base64.urlsafe_b64encode(salt).decode("ascii").rstrip("=")
+        dig_b64 = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+        return f"{self._PWD_SCHEME}${self._PWD_ITERS}${salt_b64}${dig_b64}"
+
+    def _verify_password(self, senha: str, stored: str) -> bool:
+        raw_pwd = senha or ""
+        value = str(stored or "").strip()
+        if not value:
+            return False
+
+        if value.startswith("$2"):
+            if _bcrypt is None:
+                return False
+            try:
+                return bool(_bcrypt.checkpw(raw_pwd.encode("utf-8"), value.encode("utf-8")))
+            except Exception:
+                return False
+
+        if value.startswith(f"{self._PWD_SCHEME}$"):
+            try:
+                _scheme, iters_s, salt_b64, digest_b64 = value.split("$", 3)
+                iters = int(iters_s)
+                salt_raw = base64.urlsafe_b64decode(salt_b64 + "=" * (-len(salt_b64) % 4))
+                digest_raw = base64.urlsafe_b64decode(digest_b64 + "=" * (-len(digest_b64) % 4))
+                probe = hashlib.pbkdf2_hmac(
+                    "sha256",
+                    raw_pwd.encode("utf-8"),
+                    salt_raw,
+                    max(50_000, iters),
+                )
+                return hmac.compare_digest(probe, digest_raw)
+            except Exception:
+                return False
+
+        # Compatibilidade com legado: SHA-256 simples.
+        if self._is_legacy_sha256_hash(value):
+            return hmac.compare_digest(self._legacy_sha256(raw_pwd), value.lower())
+
+        # Compatibilidade legada extrema: senha em texto puro.
+        return hmac.compare_digest(raw_pwd, value)
     
     def iniciar_banco(self):
         """Cria todas as tabelas necessÃ¡rias"""
@@ -63,6 +188,7 @@ class Database:
                 provider TEXT DEFAULT 'gemini',
                 model TEXT DEFAULT 'gemini-2.5-flash',
                 economia_mode INTEGER DEFAULT 0,
+                telemetry_opt_in INTEGER DEFAULT 0,
                 api_key TEXT,
                 FOREIGN KEY (user_id) REFERENCES usuarios (id),
                 UNIQUE (user_id)
@@ -72,6 +198,8 @@ class Database:
         ai_cols = {row[1] for row in cursor.fetchall()}
         if "economia_mode" not in ai_cols:
             cursor.execute("ALTER TABLE user_ai_config ADD COLUMN economia_mode INTEGER DEFAULT 0")
+        if "telemetry_opt_in" not in ai_cols:
+            cursor.execute("ALTER TABLE user_ai_config ADD COLUMN telemetry_opt_in INTEGER DEFAULT 0")
         
         # Tabela de OAuth
         cursor.execute("""
@@ -197,8 +325,106 @@ class Database:
                 revisao_nivel INTEGER DEFAULT 0,
                 proxima_revisao DATETIME,
                 ultima_pratica DATETIME DEFAULT CURRENT_TIMESTAMP,
+                marked_for_review INTEGER DEFAULT 0,
+                next_review_at DATETIME,
+                review_level INTEGER DEFAULT 0,
+                last_attempt_at DATETIME,
+                last_result TEXT,
                 FOREIGN KEY (user_id) REFERENCES usuarios (id),
                 UNIQUE (user_id, qhash)
+            )
+        """)
+
+        # Revisao inteligente (Prompt 5): flashcards com agenda de revisao
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS flashcards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                card_hash TEXT NOT NULL,
+                frente TEXT NOT NULL,
+                verso TEXT NOT NULL,
+                tema TEXT DEFAULT 'Geral',
+                dificuldade TEXT DEFAULT 'intermediario',
+                revisao_nivel INTEGER DEFAULT 0,
+                proxima_revisao DATETIME,
+                ultima_revisao_em DATETIME,
+                total_revisoes INTEGER DEFAULT 0,
+                total_acertos INTEGER DEFAULT 0,
+                total_erros INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES usuarios (id),
+                UNIQUE (user_id, card_hash)
+            )
+        """)
+
+        # Revisao inteligente (Prompt 5): historico de sessoes
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS review_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                session_type TEXT DEFAULT 'daily',
+                status TEXT DEFAULT 'in_progress',
+                total_items INTEGER DEFAULT 0,
+                acertos INTEGER DEFAULT 0,
+                erros INTEGER DEFAULT 0,
+                puladas INTEGER DEFAULT 0,
+                total_time_ms INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                finished_at DATETIME,
+                FOREIGN KEY (user_id) REFERENCES usuarios (id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS review_session_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                item_type TEXT NOT NULL,
+                item_ref TEXT,
+                resultado TEXT,
+                is_correct INTEGER,
+                response_time_ms INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (session_id) REFERENCES review_sessions (id)
+            )
+        """)
+
+        # Modo prova/simulado (Prompt 6)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mock_exam_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                filtro_snapshot_json TEXT,
+                progress_json TEXT,
+                total_questoes INTEGER DEFAULT 0,
+                tempo_total_s INTEGER DEFAULT 0,
+                modo TEXT DEFAULT 'timed',
+                status TEXT DEFAULT 'in_progress',
+                acertos INTEGER DEFAULT 0,
+                erros INTEGER DEFAULT 0,
+                puladas INTEGER DEFAULT 0,
+                score_pct REAL DEFAULT 0,
+                tempo_gasto_s INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                finished_at DATETIME,
+                FOREIGN KEY (user_id) REFERENCES usuarios (id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mock_exam_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                ordem INTEGER DEFAULT 0,
+                qhash TEXT,
+                meta_json TEXT,
+                resposta_index INTEGER,
+                correta_index INTEGER,
+                resultado TEXT,
+                tempo_ms INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (session_id) REFERENCES mock_exam_sessions (id)
             )
         """)
 
@@ -250,6 +476,20 @@ class Database:
                 dados_json TEXT NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES usuarios (id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS study_summary_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                source_hash TEXT NOT NULL,
+                topic TEXT DEFAULT '',
+                summary_json TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES usuarios (id),
+                UNIQUE (user_id, source_hash)
             )
         """)
 
@@ -332,6 +572,24 @@ class Database:
                 cursor.execute("ALTER TABLE questoes_usuario ADD COLUMN revisao_nivel INTEGER DEFAULT 0")
             if "proxima_revisao" not in q_cols:
                 cursor.execute("ALTER TABLE questoes_usuario ADD COLUMN proxima_revisao DATETIME")
+            if "marked_for_review" not in q_cols:
+                cursor.execute("ALTER TABLE questoes_usuario ADD COLUMN marked_for_review INTEGER DEFAULT 0")
+            if "next_review_at" not in q_cols:
+                cursor.execute("ALTER TABLE questoes_usuario ADD COLUMN next_review_at DATETIME")
+            if "review_level" not in q_cols:
+                cursor.execute("ALTER TABLE questoes_usuario ADD COLUMN review_level INTEGER DEFAULT 0")
+            if "last_attempt_at" not in q_cols:
+                cursor.execute("ALTER TABLE questoes_usuario ADD COLUMN last_attempt_at DATETIME")
+            if "last_result" not in q_cols:
+                cursor.execute("ALTER TABLE questoes_usuario ADD COLUMN last_result TEXT")
+        cursor.execute("PRAGMA table_info(mock_exam_sessions)")
+        ms_cols = {row[1] for row in cursor.fetchall()}
+        if ms_cols and "progress_json" not in ms_cols:
+            cursor.execute("ALTER TABLE mock_exam_sessions ADD COLUMN progress_json TEXT")
+        cursor.execute("PRAGMA table_info(mock_exam_items)")
+        mi_cols = {row[1] for row in cursor.fetchall()}
+        if mi_cols and "meta_json" not in mi_cols:
+            cursor.execute("ALTER TABLE mock_exam_items ADD COLUMN meta_json TEXT")
     
     def _popular_conquistas(self):
         """Popula conquistas padrÃ£o se nÃ£o existirem"""
@@ -362,31 +620,8 @@ class Database:
         conn.close()
 
     def _garantir_admin_padrao(self):
-        """Cria usuario administrador padrao se nao existir."""
-        conn = self.conectar()
-        cursor = conn.cursor()
-        try:
-            senha_hash = hashlib.sha256("admin".encode()).hexdigest()
-            cursor.execute(
-                """
-                INSERT OR IGNORE INTO usuarios
-                (nome, email, senha, idade, nivel, xp, ultima_atividade, onboarding_seen)
-                VALUES (?, ?, ?, ?, ?, ?, DATE('now'), 1)
-                """,
-                ("admin", "admin@local", senha_hash, 18, "Administrador", 99999),
-            )
-            cursor.execute(
-                """
-                INSERT OR IGNORE INTO user_subscription
-                (user_id, plan_code, premium_until, trial_used, trial_started_at, updated_at)
-                SELECT id, 'premium_30', DATETIME('now', '+3650 days'), 1, DATETIME('now'), CURRENT_TIMESTAMP
-                FROM usuarios
-                WHERE email = 'admin@local'
-                """
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        """Nao cria credenciais padrao por seguranca."""
+        return
 
     def atualizar_tema_escuro(self, user_id: int, tema_escuro: bool):
         """Atualiza preferencia de tema do usuario."""
@@ -427,8 +662,8 @@ class Database:
                 conn.close()
                 return False, "ID ja cadastrado"
             
-            # Hash da senha (em produÃ§Ã£o, use bcrypt!)
-            senha_hash = hashlib.sha256(senha.encode()).hexdigest()
+            # Hash seguro com sal e iteracoes.
+            senha_hash = self._hash_password(senha)
             
             # Inserir usuÃ¡rio
             cursor.execute("""
@@ -470,125 +705,83 @@ class Database:
         
         email = (identificador or "").strip().lower()
         senha = senha or ""
-        senha_hash = hashlib.sha256(senha.encode()).hexdigest()
-        
-        # 1) Prioridade absoluta: ID definido pelo usuario (campo email no schema atual)
-        cursor.execute("""
-            SELECT u.*, 
-                   ai.provider, ai.model, ai.api_key, ai.economia_mode
-            FROM usuarios u
-            LEFT JOIN user_ai_config ai ON u.id = ai.user_id
-            WHERE lower(u.email) = ? AND u.senha = ?
-        """, (email, senha_hash))
-        
-        row = cursor.fetchone()
-        
-        if row:
+
+        def _row_to_user(row: sqlite3.Row) -> Dict:
             row_dict = dict(row)
+            row_dict["api_key"] = self._decrypt_api_key(row_dict.get("api_key"))
             row_dict["oauth_google"] = 0
             row_dict.update(self.get_subscription_status(int(row_dict["id"])))
-            conn.close()
             return row_dict
+
+        def _validate_row(row: Optional[sqlite3.Row]) -> Optional[Dict]:
+            if not row:
+                return None
+            stored = str(row["senha"] or "")
+            if not self._verify_password(senha, stored):
+                return None
+
+            # Migracao suave: hash legado (SHA/plain) -> hash seguro ao logar.
+            if (not stored.startswith(f"{self._PWD_SCHEME}$")) and (not stored.startswith("$2")):
+                try:
+                    cursor.execute(
+                        "UPDATE usuarios SET senha = ? WHERE id = ?",
+                        (self._hash_password(senha), int(row["id"])),
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
+            return _row_to_user(row)
+
+        # 1) Prioridade absoluta: ID definido pelo usuario (campo email no schema atual)
+        cursor.execute(
+            """
+            SELECT u.*,
+                   ai.provider, ai.model, ai.api_key, ai.economia_mode, ai.telemetry_opt_in
+            FROM usuarios u
+            LEFT JOIN user_ai_config ai ON u.id = ai.user_id
+            WHERE lower(u.email) = ?
+            LIMIT 1
+            """,
+            (email,),
+        )
+        user_by_email = _validate_row(cursor.fetchone())
+        if user_by_email:
+            conn.close()
+            return user_by_email
 
         # 2) Fallback: ID curto (parte antes do @ do email)
         if "@" not in email:
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT u.*,
-                       ai.provider, ai.model, ai.api_key, ai.economia_mode
+                       ai.provider, ai.model, ai.api_key, ai.economia_mode, ai.telemetry_opt_in
                 FROM usuarios u
                 LEFT JOIN user_ai_config ai ON u.id = ai.user_id
-                WHERE lower(u.email) LIKE ? AND u.senha = ?
-            """, (f"{email}@%", senha_hash))
-            row_short = cursor.fetchone()
-            if row_short:
-                row_dict = dict(row_short)
-                row_dict["oauth_google"] = 0
-                row_dict.update(self.get_subscription_status(int(row_dict["id"])))
+                WHERE lower(u.email) LIKE ?
+                LIMIT 1
+                """,
+                (f"{email}@%",),
+            )
+            user_by_short = _validate_row(cursor.fetchone())
+            if user_by_short:
                 conn.close()
-                return row_dict
+                return user_by_short
 
         # 3) Fallback opcional: login por nome
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT u.*,
-                   ai.provider, ai.model, ai.api_key, ai.economia_mode
+                   ai.provider, ai.model, ai.api_key, ai.economia_mode, ai.telemetry_opt_in
             FROM usuarios u
             LEFT JOIN user_ai_config ai ON u.id = ai.user_id
-            WHERE lower(u.nome) = ? AND u.senha = ?
-        """, (email, senha_hash))
-        row_name = cursor.fetchone()
-        if row_name:
-            row_dict = dict(row_name)
-            row_dict["oauth_google"] = 0
-            row_dict.update(self.get_subscription_status(int(row_dict["id"])))
-            conn.close()
-            return row_dict
-
-        # Compatibilidade com dados legados: senha em texto puro.
-        cursor.execute("""
-            SELECT u.*,
-                   ai.provider, ai.model, ai.api_key, ai.economia_mode
-            FROM usuarios u
-            LEFT JOIN user_ai_config ai ON u.id = ai.user_id
-            WHERE lower(u.email) = ? AND u.senha = ?
-        """, (email, senha))
-        row_plain = cursor.fetchone()
-        if row_plain:
-            cursor.execute(
-                "UPDATE usuarios SET senha = ? WHERE id = ?",
-                (senha_hash, row_plain["id"])
-            )
-            conn.commit()
-            row_dict = dict(row_plain)
-            row_dict["oauth_google"] = 0
-            row_dict.update(self.get_subscription_status(int(row_dict["id"])))
-            conn.close()
-            return row_dict
-
-        # Compatibilidade legada + ID curto
-        if "@" not in email:
-            cursor.execute("""
-                SELECT u.*,
-                       ai.provider, ai.model, ai.api_key, ai.economia_mode
-                FROM usuarios u
-                LEFT JOIN user_ai_config ai ON u.id = ai.user_id
-                WHERE lower(u.email) LIKE ? AND u.senha = ?
-            """, (f"{email}@%", senha))
-            row_plain_short = cursor.fetchone()
-            if row_plain_short:
-                cursor.execute(
-                    "UPDATE usuarios SET senha = ? WHERE id = ?",
-                    (senha_hash, row_plain_short["id"])
-                )
-                conn.commit()
-                row_dict = dict(row_plain_short)
-                row_dict["oauth_google"] = 0
-                row_dict.update(self.get_subscription_status(int(row_dict["id"])))
-                conn.close()
-                return row_dict
-
-        # Compatibilidade legada + nome
-        cursor.execute("""
-            SELECT u.*,
-                   ai.provider, ai.model, ai.api_key, ai.economia_mode
-            FROM usuarios u
-            LEFT JOIN user_ai_config ai ON u.id = ai.user_id
-            WHERE lower(u.nome) = ? AND u.senha = ?
-        """, (email, senha))
-        row_plain_name = cursor.fetchone()
-        if row_plain_name:
-            cursor.execute(
-                "UPDATE usuarios SET senha = ? WHERE id = ?",
-                (senha_hash, row_plain_name["id"])
-            )
-            conn.commit()
-            row_dict = dict(row_plain_name)
-            row_dict["oauth_google"] = 0
-            row_dict.update(self.get_subscription_status(int(row_dict["id"])))
-            conn.close()
-            return row_dict
-
+            WHERE lower(u.nome) = ?
+            LIMIT 1
+            """,
+            (email,),
+        )
+        user_by_name = _validate_row(cursor.fetchone())
         conn.close()
-        return None
+        return user_by_name
 
     def _calcular_idade(self, data_nascimento: str) -> Optional[int]:
         """Calcula idade aproximada para manter compatibilidade do campo legado."""
@@ -630,7 +823,7 @@ class Database:
             user_id = row['id']
         else:
             # Criar novo usuÃ¡rio
-            senha_random = hashlib.sha256(google_id.encode()).hexdigest()
+            senha_random = self._hash_password(str(google_id or os.urandom(8).hex()))
             cursor.execute("""
                 INSERT INTO usuarios (nome, email, senha, idade, avatar, ultima_atividade, onboarding_seen)
                 VALUES (?, ?, ?, ?, ?, DATE('now'), 0)
@@ -663,7 +856,7 @@ class Database:
         # Retornar dados do usuÃ¡rio
         cursor.execute("""
             SELECT u.*, 
-                   ai.provider, ai.model, ai.api_key, ai.economia_mode
+                   ai.provider, ai.model, ai.api_key, ai.economia_mode, ai.telemetry_opt_in
             FROM usuarios u
             LEFT JOIN user_ai_config ai ON u.id = ai.user_id
             WHERE u.id = ?
@@ -674,10 +867,85 @@ class Database:
         
         if row:
             row_dict = dict(row)
+            row_dict["api_key"] = self._decrypt_api_key(row_dict.get("api_key"))
             row_dict["oauth_google"] = 1
             row_dict.update(self.get_subscription_status(int(row_dict["id"])))
             return row_dict
         return None
+
+    def sync_cloud_user(self, backend_user_id: int, email: str, nome: str) -> Optional[Dict]:
+        """
+        Sincroniza um usuario autenticado no backend para uso local (cache/perfil),
+        sem usar autenticacao local por senha.
+        """
+        conn = self.conectar()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        email_clean = (email or "").strip().lower()
+        nome_clean = (nome or "").strip() or (email_clean.split("@")[0] if "@" in email_clean else "Usuario")
+        if not email_clean:
+            conn.close()
+            return None
+
+        try:
+            cursor.execute("SELECT id FROM usuarios WHERE lower(email) = ? LIMIT 1", (email_clean,))
+            row = cursor.fetchone()
+            if row:
+                user_id = int(row["id"])
+                cursor.execute(
+                    """
+                    UPDATE usuarios
+                    SET nome = ?, email = ?, ultima_atividade = DATE('now')
+                    WHERE id = ?
+                    """,
+                    (nome_clean, email_clean, user_id),
+                )
+            else:
+                pwd_seed = f"cloud-{int(backend_user_id or 0)}-{os.urandom(8).hex()}"
+                senha_random = self._hash_password(pwd_seed)
+                cursor.execute(
+                    """
+                    INSERT INTO usuarios (nome, email, senha, idade, avatar, ultima_atividade, onboarding_seen)
+                    VALUES (?, ?, ?, ?, ?, DATE('now'), 0)
+                    """,
+                    (nome_clean, email_clean, senha_random, 18, "user"),
+                )
+                user_id = int(cursor.lastrowid or 0)
+
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO user_ai_config (user_id, provider, model)
+                VALUES (?, 'gemini', 'gemini-2.5-flash')
+                """,
+                (user_id,),
+            )
+            self._ensure_subscription_row(cursor, user_id)
+            conn.commit()
+
+            cursor.execute(
+                """
+                SELECT u.*,
+                       ai.provider, ai.model, ai.api_key, ai.economia_mode, ai.telemetry_opt_in
+                FROM usuarios u
+                LEFT JOIN user_ai_config ai ON u.id = ai.user_id
+                WHERE u.id = ?
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            user_row = cursor.fetchone()
+            if not user_row:
+                return None
+            row_dict = dict(user_row)
+            row_dict["api_key"] = self._decrypt_api_key(row_dict.get("api_key"))
+            row_dict["oauth_google"] = 0
+            row_dict["backend_user_id"] = int(backend_user_id or 0)
+            row_dict.update(self.get_subscription_status(user_id))
+            return row_dict
+        except Exception:
+            return None
+        finally:
+            conn.close()
 
     def _ensure_subscription_row(self, cursor, user_id: int):
         cursor.execute(
@@ -688,6 +956,65 @@ class Database:
             """,
             (user_id,),
         )
+
+    @staticmethod
+    def _normalize_subscription_datetime(value: Optional[str]) -> Optional[str]:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        candidates = [raw]
+        if raw.endswith("Z"):
+            candidates.append(raw[:-1] + "+00:00")
+        for candidate in candidates:
+            try:
+                dt = datetime.datetime.fromisoformat(candidate)
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt = datetime.datetime.strptime(raw, fmt)
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+        return None
+
+    def sync_subscription_status(
+        self,
+        user_id: int,
+        plan_code: str,
+        premium_until: Optional[str],
+        trial_used: int,
+    ) -> bool:
+        conn = self.conectar()
+        cursor = conn.cursor()
+        try:
+            self._ensure_subscription_row(cursor, int(user_id))
+            normalized_until = self._normalize_subscription_datetime(premium_until)
+            cursor.execute(
+                """
+                UPDATE user_subscription
+                SET plan_code = ?,
+                    premium_until = ?,
+                    trial_used = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+                """,
+                (
+                    str(plan_code or "free"),
+                    normalized_until,
+                    1 if int(trial_used or 0) else 0,
+                    int(user_id),
+                ),
+            )
+            conn.commit()
+            return True
+        except Exception:
+            return False
+        finally:
+            conn.close()
 
     def get_subscription_status(self, user_id: int) -> Dict:
         conn = self.conectar()
@@ -795,17 +1122,44 @@ class Database:
             return True, used + 1
         finally:
             conn.close()
+
+    def obter_uso_diario(self, user_id: int, feature_key: str) -> int:
+        """Retorna o consumo do recurso no dia atual sem incrementar uso."""
+        conn = self.conectar()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT used_count
+                FROM usage_daily
+                WHERE user_id = ? AND feature_key = ? AND day_key = DATE('now')
+                LIMIT 1
+                """,
+                (int(user_id), str(feature_key or "")),
+            )
+            row = cursor.fetchone()
+            return int((row[0] if row else 0) or 0)
+        finally:
+            conn.close()
     
     def atualizar_api_key(self, user_id: int, api_key: str):
         """Atualiza API key do usuÃ¡rio"""
         conn = self.conectar()
         cursor = conn.cursor()
+        encrypted = self._encrypt_api_key(api_key)
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO user_ai_config (user_id, provider, model, economia_mode, api_key)
+            VALUES (?, 'gemini', 'gemini-2.5-flash', 0, NULL)
+            """,
+            (user_id,),
+        )
         
         cursor.execute("""
             UPDATE user_ai_config
             SET api_key = ?
             WHERE user_id = ?
-        """, (api_key, user_id))
+        """, (encrypted, user_id))
         
         conn.commit()
         conn.close()
@@ -814,6 +1168,13 @@ class Database:
         """Atualiza configuraÃ§Ã£o de IA do usuÃ¡rio"""
         conn = self.conectar()
         cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO user_ai_config (user_id, provider, model, economia_mode, api_key)
+            VALUES (?, 'gemini', 'gemini-2.5-flash', 0, NULL)
+            """,
+            (user_id,),
+        )
         
         cursor.execute("""
             UPDATE user_ai_config
@@ -910,6 +1271,13 @@ class Database:
         """Atualiza modo economia da IA do usuario."""
         conn = self.conectar()
         cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO user_ai_config (user_id, provider, model, economia_mode, api_key)
+            VALUES (?, 'gemini', 'gemini-2.5-flash', 0, NULL)
+            """,
+            (user_id,),
+        )
         cursor.execute(
             """
             UPDATE user_ai_config
@@ -1096,20 +1464,47 @@ class Database:
         cursor = conn.cursor()
         
         if periodo == "Hoje":
-            cursor.execute("""
-                SELECT u.nome, u.avatar, u.nivel, u.xp, u.acertos, u.total_questoes
+            cursor.execute(
+                """
+                SELECT
+                    u.nome,
+                    u.avatar,
+                    u.nivel,
+                    u.xp,
+                    u.acertos,
+                    u.total_questoes,
+                    COALESCE((
+                        SELECT SUM(epd.tempo_segundos)
+                        FROM estudo_progresso_diario epd
+                        WHERE epd.user_id = u.id
+                          AND epd.dia = DATE('now')
+                    ), 0) AS segundos_estudo
                 FROM usuarios u
                 WHERE u.ultima_atividade = DATE('now')
                 ORDER BY u.xp DESC
                 LIMIT 50
-            """)
+                """
+            )
         else:
-            cursor.execute("""
-                SELECT u.nome, u.avatar, u.nivel, u.xp, u.acertos, u.total_questoes
+            cursor.execute(
+                """
+                SELECT
+                    u.nome,
+                    u.avatar,
+                    u.nivel,
+                    u.xp,
+                    u.acertos,
+                    u.total_questoes,
+                    COALESCE((
+                        SELECT SUM(epd.tempo_segundos)
+                        FROM estudo_progresso_diario epd
+                        WHERE epd.user_id = u.id
+                    ), 0) AS segundos_estudo
                 FROM usuarios u
                 ORDER BY u.xp DESC
                 LIMIT 50
-            """)
+                """
+            )
         
         rows = cursor.fetchall()
         conn.close()
@@ -1118,14 +1513,469 @@ class Database:
         for row in rows:
             user_dict = dict(row)
             # Calcular mÃ©tricas
-            total = user_dict['total_questoes']
-            acertos = user_dict['acertos']
-            user_dict['taxa_acerto'] = (acertos / total * 100) if total > 0 else 0
-            user_dict['horas_estudo'] = 0  # TODO: calcular do banco
-            user_dict['pontuacao'] = user_dict['xp']
+            total = int(user_dict.get("total_questoes") or 0)
+            acertos = int(user_dict.get("acertos") or 0)
+            segundos_estudo = int(user_dict.pop("segundos_estudo", 0) or 0)
+            user_dict["taxa_acerto"] = (acertos / total * 100) if total > 0 else 0
+            user_dict["horas_estudo"] = round(segundos_estudo / 3600.0, 2)
+            user_dict["pontuacao"] = int(user_dict.get("xp") or 0)
             ranking.append(user_dict)
         
         return ranking
+
+    def execute_query(self, query: str, params: Optional[Tuple[Any, ...]] = None) -> List[Dict]:
+        """Executa SELECT generico e retorna lista de dicts."""
+        conn = self.conectar()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(query, params or ())
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def _flashcard_hash(self, card: Dict) -> str:
+        base = {
+            "frente": str(card.get("frente") or "").strip(),
+            "verso": str(card.get("verso") or "").strip(),
+            "tema": str(card.get("tema") or "Geral").strip(),
+        }
+        payload = json.dumps(base, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def salvar_flashcards_gerados(self, user_id: int, tema: str, cards: List[Dict], dificuldade: str = "intermediario") -> int:
+        if not cards:
+            return 0
+        conn = self.conectar()
+        cursor = conn.cursor()
+        added = 0
+        for card in cards:
+            frente = str(card.get("frente") or "").strip()
+            verso = str(card.get("verso") or "").strip()
+            if not frente or not verso:
+                continue
+            card_hash = self._flashcard_hash({"frente": frente, "verso": verso, "tema": tema})
+            cursor.execute(
+                """
+                INSERT INTO flashcards
+                (user_id, card_hash, frente, verso, tema, dificuldade, revisao_nivel, proxima_revisao, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 0, DATETIME('now', '+1 day'), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, card_hash) DO UPDATE SET
+                    frente = excluded.frente,
+                    verso = excluded.verso,
+                    tema = excluded.tema,
+                    dificuldade = excluded.dificuldade,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    user_id,
+                    card_hash,
+                    frente,
+                    verso,
+                    str(tema or "Geral"),
+                    str(dificuldade or "intermediario"),
+                ),
+            )
+            added += 1
+        conn.commit()
+        conn.close()
+
+    def sync_ai_preferences(
+        self,
+        user_id: int,
+        provider: str,
+        model: str,
+        api_key: Optional[str],
+        economia_mode: bool,
+        telemetry_opt_in: bool,
+    ) -> bool:
+        """Sincroniza preferencias de IA vindas do backend para cache local."""
+        conn = self.conectar()
+        cursor = conn.cursor()
+        try:
+            provider_clean = str(provider or "gemini").strip().lower() or "gemini"
+            model_clean = str(model or "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+            encrypted = self._encrypt_api_key(api_key)
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO user_ai_config (user_id, provider, model, economia_mode, api_key, telemetry_opt_in)
+                VALUES (?, 'gemini', 'gemini-2.5-flash', 0, NULL, 0)
+                """,
+                (int(user_id),),
+            )
+            cursor.execute(
+                """
+                UPDATE user_ai_config
+                SET provider = ?,
+                    model = ?,
+                    api_key = ?,
+                    economia_mode = ?,
+                    telemetry_opt_in = ?
+                WHERE user_id = ?
+                """,
+                (
+                    provider_clean,
+                    model_clean,
+                    encrypted,
+                    1 if bool(economia_mode) else 0,
+                    1 if bool(telemetry_opt_in) else 0,
+                    int(user_id),
+                ),
+            )
+            conn.commit()
+            return True
+        except Exception:
+            return False
+        finally:
+            conn.close()
+        return added
+
+    def atualizar_telemetria_opt_in(self, user_id: int, telemetry_opt_in: bool):
+        """Atualiza consentimento de telemetria anonima (opt-in)."""
+        conn = self.conectar()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO user_ai_config (user_id, provider, model, economia_mode, api_key)
+            VALUES (?, 'gemini', 'gemini-2.5-flash', 0, NULL)
+            """,
+            (user_id,),
+        )
+        cursor.execute(
+            """
+            UPDATE user_ai_config
+            SET telemetry_opt_in = ?
+            WHERE user_id = ?
+            """,
+            (1 if telemetry_opt_in else 0, user_id),
+        )
+        conn.commit()
+        conn.close()
+
+    def registrar_revisao_flashcard(self, user_id: int, card: Dict, lembrei: bool) -> None:
+        card_hash = self._flashcard_hash(card)
+        conn = self.conectar()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, revisao_nivel, total_revisoes, total_acertos, total_erros
+            FROM flashcards
+            WHERE user_id = ? AND card_hash = ?
+            LIMIT 1
+            """,
+            (user_id, card_hash),
+        )
+        row = cursor.fetchone()
+        if not row:
+            self.salvar_flashcards_gerados(user_id, str(card.get("tema") or "Geral"), [card], str(card.get("dificuldade") or "intermediario"))
+            cursor.execute(
+                """
+                SELECT id, revisao_nivel, total_revisoes, total_acertos, total_erros
+                FROM flashcards
+                WHERE user_id = ? AND card_hash = ?
+                LIMIT 1
+                """,
+                (user_id, card_hash),
+            )
+            row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return
+
+        nivel_atual = int(row["revisao_nivel"] or 0)
+        total_rev = int(row["total_revisoes"] or 0) + 1
+        total_acertos = int(row["total_acertos"] or 0) + (1 if lembrei else 0)
+        total_erros = int(row["total_erros"] or 0) + (0 if lembrei else 1)
+
+        intervalos = [1, 2, 4, 7, 14, 30, 60, 120, 180]
+        if lembrei:
+            novo_nivel = min(len(intervalos) - 1, nivel_atual + 1)
+            dias = intervalos[novo_nivel]
+        else:
+            novo_nivel = max(0, nivel_atual - 1)
+            dias = 1
+
+        cursor.execute(
+            """
+            UPDATE flashcards
+            SET revisao_nivel = ?,
+                proxima_revisao = DATETIME('now', '+' || ? || ' days'),
+                ultima_revisao_em = CURRENT_TIMESTAMP,
+                total_revisoes = ?,
+                total_acertos = ?,
+                total_erros = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (novo_nivel, dias, total_rev, total_acertos, total_erros, int(row["id"])),
+        )
+        conn.commit()
+        conn.close()
+
+    def iniciar_review_session(self, user_id: int, session_type: str, total_items: int) -> int:
+        conn = self.conectar()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO review_sessions (user_id, session_type, status, total_items, created_at)
+            VALUES (?, ?, 'in_progress', ?, CURRENT_TIMESTAMP)
+            """,
+            (user_id, str(session_type or "daily"), int(max(0, total_items))),
+        )
+        sid = int(cursor.lastrowid or 0)
+        conn.commit()
+        conn.close()
+        return sid
+
+    def registrar_review_session_item(
+        self,
+        session_id: int,
+        item_type: str,
+        item_ref: str,
+        resultado: str,
+        is_correct: Optional[bool],
+        response_time_ms: int = 0,
+    ) -> None:
+        conn = self.conectar()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO review_session_items
+            (session_id, item_type, item_ref, resultado, is_correct, response_time_ms, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (
+                int(session_id),
+                str(item_type or "question"),
+                str(item_ref or ""),
+                str(resultado or ""),
+                None if is_correct is None else (1 if is_correct else 0),
+                int(max(0, response_time_ms or 0)),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def finalizar_review_session(self, session_id: int, acertos: int, erros: int, puladas: int, total_time_ms: int) -> None:
+        conn = self.conectar()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE review_sessions
+            SET status = 'finished',
+                acertos = ?,
+                erros = ?,
+                puladas = ?,
+                total_time_ms = ?,
+                finished_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                int(max(0, acertos)),
+                int(max(0, erros)),
+                int(max(0, puladas)),
+                int(max(0, total_time_ms)),
+                int(session_id),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def criar_mock_exam_session(
+        self,
+        user_id: int,
+        filtro_snapshot: Dict,
+        total_questoes: int,
+        tempo_total_s: int,
+        modo: str = "timed",
+    ) -> int:
+        conn = self.conectar()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO mock_exam_sessions
+            (user_id, filtro_snapshot_json, progress_json, total_questoes, tempo_total_s, modo, status, created_at)
+            VALUES (?, ?, NULL, ?, ?, ?, 'in_progress', CURRENT_TIMESTAMP)
+            """,
+            (
+                int(user_id),
+                json.dumps(filtro_snapshot or {}, ensure_ascii=False),
+                int(max(0, total_questoes)),
+                int(max(0, tempo_total_s)),
+                str(modo or "timed"),
+            ),
+        )
+        sid = int(cursor.lastrowid or 0)
+        conn.commit()
+        conn.close()
+        return sid
+
+    def registrar_mock_exam_item(
+        self,
+        session_id: int,
+        ordem: int,
+        question: Dict,
+        meta: Optional[Dict],
+        resposta_index: Optional[int],
+        correta_index: Optional[int],
+        tempo_ms: int = 0,
+    ) -> None:
+        resultado = "skip"
+        if resposta_index is not None and correta_index is not None:
+            resultado = "correct" if int(resposta_index) == int(correta_index) else "wrong"
+        conn = self.conectar()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO mock_exam_items
+            (session_id, ordem, qhash, meta_json, resposta_index, correta_index, resultado, tempo_ms, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (
+                int(session_id),
+                int(max(0, ordem)),
+                self._question_hash(question),
+                json.dumps(meta or {}, ensure_ascii=False),
+                None if resposta_index is None else int(resposta_index),
+                None if correta_index is None else int(correta_index),
+                resultado,
+                int(max(0, tempo_ms or 0)),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def salvar_mock_exam_progresso(self, session_id: int, current_idx: int, respostas: Dict[int, Optional[int]]) -> None:
+        payload = {
+            "current_idx": int(max(0, current_idx or 0)),
+            "respostas": {str(k): (None if v is None else int(v)) for k, v in (respostas or {}).items()},
+            "updated_at": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        }
+        conn = self.conectar()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE mock_exam_sessions
+            SET progress_json = ?
+            WHERE id = ?
+            """,
+            (json.dumps(payload, ensure_ascii=False), int(session_id)),
+        )
+        conn.commit()
+        conn.close()
+
+    def finalizar_mock_exam_session(
+        self,
+        session_id: int,
+        acertos: int,
+        erros: int,
+        puladas: int,
+        score_pct: float,
+        tempo_gasto_s: int,
+    ) -> None:
+        conn = self.conectar()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE mock_exam_sessions
+            SET status = 'finished',
+                acertos = ?,
+                erros = ?,
+                puladas = ?,
+                score_pct = ?,
+                tempo_gasto_s = ?,
+                finished_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                int(max(0, acertos)),
+                int(max(0, erros)),
+                int(max(0, puladas)),
+                float(max(0.0, min(100.0, score_pct))),
+                int(max(0, tempo_gasto_s)),
+                int(session_id),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def contar_simulados_hoje(self, user_id: int) -> int:
+        conn = self.conectar()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM mock_exam_sessions
+            WHERE user_id = ? AND DATE(created_at) = DATE('now')
+            """,
+            (int(user_id),),
+        )
+        total = cursor.fetchone()[0]
+        conn.close()
+        return int(total or 0)
+
+    def listar_historico_simulados(self, user_id: int, limite: int = 20) -> List[Dict]:
+        conn = self.conectar()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, modo, status, total_questoes, acertos, erros, puladas, score_pct,
+                   tempo_total_s, tempo_gasto_s, created_at, finished_at
+            FROM mock_exam_sessions
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (int(user_id), int(max(1, limite))),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def contadores_revisao(self, user_id: int) -> Dict[str, int]:
+        conn = self.conectar()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM flashcards
+            WHERE user_id = ?
+              AND proxima_revisao IS NOT NULL
+              AND DATETIME(proxima_revisao) <= DATETIME('now')
+            """,
+            (int(user_id),),
+        )
+        flashcards_pendentes = int((cursor.fetchone() or [0])[0] or 0)
+
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM questoes_usuario
+            WHERE user_id = ?
+              AND proxima_revisao IS NOT NULL
+              AND DATETIME(proxima_revisao) <= DATETIME('now')
+            """,
+            (int(user_id),),
+        )
+        questoes_pendentes = int((cursor.fetchone() or [0])[0] or 0)
+
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM questoes_usuario
+            WHERE user_id = ? AND marcado_erro = 1
+            """,
+            (int(user_id),),
+        )
+        questoes_marcadas = int((cursor.fetchone() or [0])[0] or 0)
+
+        conn.close()
+        return {
+            "flashcards_pendentes": flashcards_pendentes,
+            "questoes_pendentes": questoes_pendentes,
+            "questoes_marcadas": questoes_marcadas,
+        }
 
     def _question_hash(self, question: Dict) -> str:
         base = {
@@ -1213,6 +2063,7 @@ class Database:
             erros = row[4] if row else 0
             revisao_nivel = row[5] if row else 0
             proxima_revisao_expr = None
+            last_result = None
 
             if tentativa_correta is True:
                 tentativas += 1
@@ -1222,20 +2073,25 @@ class Database:
                 dias_map = [1, 3, 7, 14, 30]
                 dias = dias_map[revisao_nivel]
                 proxima_revisao_expr = f"DATETIME('now', '+{dias} days')"
+                last_result = "correct"
             elif tentativa_correta is False:
                 tentativas += 1
                 erros += 1
                 revisao_nivel = 0
                 mark = 1
                 proxima_revisao_expr = "DATETIME('now', '+1 day')"
+                last_result = "wrong"
 
             proxima_revisao_sql = proxima_revisao_expr or "NULL"
+            next_review_sql = proxima_revisao_sql
+            review_level = int(revisao_nivel or 0)
 
             cursor.execute(
                 f"""
                 INSERT INTO questoes_usuario
-                (user_id, qhash, dados_json, tema, dificuldade, favorita, marcado_erro, tentativas, acertos, erros, revisao_nivel, proxima_revisao, ultima_pratica)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {proxima_revisao_sql}, CURRENT_TIMESTAMP)
+                (user_id, qhash, dados_json, tema, dificuldade, favorita, marcado_erro, tentativas, acertos, erros,
+                 revisao_nivel, proxima_revisao, ultima_pratica, marked_for_review, next_review_at, review_level, last_attempt_at, last_result)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {proxima_revisao_sql}, CURRENT_TIMESTAMP, ?, {next_review_sql}, ?, CURRENT_TIMESTAMP, ?)
                 ON CONFLICT(user_id, qhash) DO UPDATE SET
                     dados_json = excluded.dados_json,
                     tema = excluded.tema,
@@ -1247,7 +2103,12 @@ class Database:
                     erros = excluded.erros,
                     revisao_nivel = excluded.revisao_nivel,
                     proxima_revisao = COALESCE(excluded.proxima_revisao, questoes_usuario.proxima_revisao),
-                    ultima_pratica = CURRENT_TIMESTAMP
+                    ultima_pratica = CURRENT_TIMESTAMP,
+                    marked_for_review = excluded.marked_for_review,
+                    next_review_at = COALESCE(excluded.next_review_at, questoes_usuario.next_review_at),
+                    review_level = excluded.review_level,
+                    last_attempt_at = CURRENT_TIMESTAMP,
+                    last_result = COALESCE(excluded.last_result, questoes_usuario.last_result)
                 """,
                 (
                     user_id,
@@ -1261,6 +2122,9 @@ class Database:
                     acertos,
                     erros,
                     revisao_nivel,
+                    mark,
+                    review_level,
+                    last_result,
                 ),
             )
             conn.commit()
@@ -1370,6 +2234,16 @@ class Database:
         conn = self.conectar()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM quiz_filtros_salvos WHERE id = ? AND user_id = ?", (filtro_id, user_id))
+        conn.commit()
+        conn.close()
+
+    def renomear_filtro_quiz(self, filtro_id: int, user_id: int, novo_nome: str) -> None:
+        conn = self.conectar()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE quiz_filtros_salvos SET nome = ? WHERE id = ? AND user_id = ?",
+            (str(novo_nome or "").strip(), int(filtro_id), int(user_id)),
+        )
         conn.commit()
         conn.close()
 
@@ -1562,6 +2436,56 @@ class Database:
                 }
             )
         return out
+
+    def obter_resumo_por_hash(self, user_id: int, source_hash: str) -> Optional[Dict]:
+        if not source_hash:
+            return None
+        conn = self.conectar()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT summary_json
+            FROM study_summary_cache
+            WHERE user_id = ? AND source_hash = ?
+            LIMIT 1
+            """,
+            (int(user_id), str(source_hash)),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        try:
+            data = json.loads(row["summary_json"] or "{}")
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    def salvar_resumo_por_hash(self, user_id: int, source_hash: str, topic: str, summary: Dict) -> None:
+        if not source_hash or not isinstance(summary, dict):
+            return
+        conn = self.conectar()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO study_summary_cache
+            (user_id, source_hash, topic, summary_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id, source_hash) DO UPDATE SET
+                topic = excluded.topic,
+                summary_json = excluded.summary_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                int(user_id),
+                str(source_hash),
+                str(topic or ""),
+                json.dumps(summary, ensure_ascii=False),
+            ),
+        )
+        conn.commit()
+        conn.close()
 
     def salvar_nota_questao(self, user_id: int, question: Dict, nota: str) -> None:
         qhash = self._question_hash(question)

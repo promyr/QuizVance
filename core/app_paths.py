@@ -10,7 +10,8 @@ import tempfile
 from pathlib import Path
 
 APP_NAME = "Quiz Vance"
-ANDROID_PACKAGE = "com.flet.quiz_vance_app"
+ANDROID_PACKAGE = "br.quizvance.app"
+LEGACY_ANDROID_PACKAGES = ("com.flet.quiz_vance_app",)
 
 
 def _project_root() -> Path:
@@ -24,16 +25,25 @@ def _candidate_bases():
 
     is_android = bool(os.getenv("ANDROID_DATA"))
     if is_android:
-        # Prefer app-private writable paths to avoid permission issues.
-        yield Path.cwd() / ".quizvance_runtime"
-
+        # Prefer official app storage path from runtime first for persistence.
         flet_data = (os.getenv("FLET_APP_STORAGE_DATA") or "").strip()
         if flet_data:
             yield Path(flet_data) / APP_NAME
 
-        yield Path("/data/user/0") / ANDROID_PACKAGE / "files" / APP_NAME
-        yield Path("/data/data") / ANDROID_PACKAGE / "files" / APP_NAME
-        yield Path("/sdcard/Android/data") / ANDROID_PACKAGE / "files" / APP_NAME
+        pkg_override = (os.getenv("QUIZVANCE_ANDROID_PACKAGE") or "").strip()
+        package_candidates = []
+        for pkg in (pkg_override, ANDROID_PACKAGE, *LEGACY_ANDROID_PACKAGES):
+            normalized = str(pkg or "").strip()
+            if normalized and normalized not in package_candidates:
+                package_candidates.append(normalized)
+
+        for pkg in package_candidates:
+            yield Path("/data/user/0") / pkg / "files" / APP_NAME
+            yield Path("/data/data") / pkg / "files" / APP_NAME
+            yield Path("/sdcard/Android/data") / pkg / "files" / APP_NAME
+
+        # Last resort fallback for runtimes with unusual working directories.
+        yield Path.cwd() / ".quizvance_runtime"
         yield Path(tempfile.gettempdir()) / APP_NAME
         return
 

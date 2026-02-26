@@ -8,12 +8,19 @@ Suporta Google Gemini e OpenAI GPT
 import json
 import random
 import time
+import datetime
 import warnings
 import sys
 import os
 import re
 from typing import Optional, Dict, List, Any
 from abc import ABC, abstractmethod
+
+try:
+    from core.error_monitor import log_event
+except Exception:
+    def log_event(name: str, data: str = "") -> None:
+        _ = (name, data)
 
 # Configurar encoding para UTF-8 em Windows
 os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -225,8 +232,55 @@ def create_ai_provider(provider_type: str, api_key: str, model: Optional[str] = 
 class AIService:
     """ServiÃ§o centralizado de AI"""
     
-    def __init__(self, provider: AIProvider):
+    def __init__(self, provider: AIProvider, telemetry_opt_in: bool = False, user_anon: str = "anon"):
         self.provider = provider
+        self.telemetry_opt_in = bool(telemetry_opt_in)
+        self.user_anon = str(user_anon or "anon")
+
+    def _emit_ai_event(
+        self,
+        event_name: str,
+        feature_name: str,
+        latency_ms: int = 0,
+        error_code: str = "",
+    ) -> None:
+        if not self.telemetry_opt_in:
+            return
+        provider_name = str(self.provider.__class__.__name__.replace("Provider", "")).lower()
+        payload = {
+            "timestamp": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "feature_name": str(feature_name or "unknown"),
+            "provider": provider_name,
+            "model": str(getattr(self.provider, "model", "") or ""),
+            "latency_ms": int(max(0, latency_ms or 0)),
+            "error_code": str(error_code or ""),
+            "user_anon": self.user_anon,
+        }
+        try:
+            log_event(event_name, json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            pass
+
+    def _call_provider_text(self, prompt: str, feature_name: str) -> Optional[str]:
+        started = time.perf_counter()
+        self._emit_ai_event("ai_call_started", feature_name=feature_name)
+        error_code = ""
+        try:
+            text = self.provider.generate_text(prompt)
+            if not text:
+                error_code = self._provider_error_kind() or "empty_response"
+            return text
+        except Exception:
+            error_code = "exception"
+            raise
+        finally:
+            latency = int(max(0.0, (time.perf_counter() - started) * 1000.0))
+            self._emit_ai_event(
+                "ai_call_finished",
+                feature_name=feature_name,
+                latency_ms=latency,
+                error_code=error_code,
+            )
     
     def _normalize_quiz(self, data: Dict) -> Optional[Dict]:
         """Normaliza dados de quiz"""
@@ -321,6 +375,50 @@ class AIService:
             "explicacao": str(explicacao).strip()
         }
 
+    def validate_task_payload(self, task: str, payload: Any) -> tuple[bool, str]:
+        task_name = str(task or "").strip().lower()
+        if task_name == "quiz":
+            if not isinstance(payload, dict):
+                return False, "quiz_payload_not_dict"
+            pergunta = str(payload.get("pergunta") or "").strip()
+            opcoes = payload.get("opcoes")
+            try:
+                correta_index = int(payload.get("correta_index", 0))
+            except Exception:
+                return False, "quiz_correta_index_invalid"
+            if not pergunta:
+                return False, "quiz_pergunta_empty"
+            if not isinstance(opcoes, list) or len(opcoes) < 2:
+                return False, "quiz_opcoes_invalid"
+            if correta_index < 0 or correta_index >= len(opcoes):
+                return False, "quiz_correta_out_of_range"
+            return True, "ok"
+        if task_name == "flashcard":
+            if not isinstance(payload, dict):
+                return False, "flashcard_payload_not_dict"
+            frente = str(payload.get("frente") or "").strip()
+            verso = str(payload.get("verso") or "").strip()
+            if not frente or not verso:
+                return False, "flashcard_missing_fields"
+            return True, "ok"
+        if task_name == "study_plan_item":
+            if not isinstance(payload, dict):
+                return False, "study_plan_item_not_dict"
+            if not str(payload.get("dia") or "").strip():
+                return False, "study_plan_day_empty"
+            if not str(payload.get("tema") or "").strip():
+                return False, "study_plan_theme_empty"
+            return True, "ok"
+        if task_name == "study_summary":
+            if not isinstance(payload, dict):
+                return False, "study_summary_not_dict"
+            required_keys = ["titulo", "resumo_curto", "topicos_principais", "checklist_de_estudo"]
+            for key in required_keys:
+                if key not in payload:
+                    return False, f"study_summary_missing_{key}"
+            return True, "ok"
+        return False, "task_not_supported"
+
     def _provider_error_kind(self) -> str:
         provider = getattr(self, "provider", None)
         return str(getattr(provider, "last_error_kind", "") or "").strip().lower()
@@ -412,7 +510,7 @@ Formato JSON obrigatorio:
 
         for attempt in range(tentativas):
             try:
-                text = self.provider.generate_text(prompt)
+                text = self._call_provider_text(prompt, "quiz_batch")
                 if not text:
                     if self._should_abort_retry():
                         break
@@ -423,6 +521,7 @@ Formato JSON obrigatorio:
                     data = self.provider.extract_json_object(text)
 
                 normalizadas = self._normalize_quiz_batch_payload(data, quantidade)
+                normalizadas = [q for q in normalizadas if self.validate_task_payload("quiz", q)[0]]
                 if normalizadas:
                     print(f"[AI] [OK] {len(normalizadas)} questoes geradas em lote")
                     return normalizadas
@@ -536,7 +635,7 @@ Texto:
 
         for attempt in range(tentativas):
             try:
-                text = self.provider.generate_text(prompt)
+                text = self._call_provider_text(prompt, "flashcards")
                 if not text:
                     if self._should_abort_retry():
                         break
@@ -557,6 +656,8 @@ Texto:
                     for item in data:
                         card = self._normalize_flashcard(item if isinstance(item, dict) else {})
                         if not card:
+                            continue
+                        if not self.validate_task_payload("flashcard", card)[0]:
                             continue
                         key = card["frente"].lower()
                         if key in seen:
@@ -617,7 +718,7 @@ Texto:
         tentativas = max(1, int(retries or 1))
         for attempt in range(tentativas):
             try:
-                text = self.provider.generate_text(prompt)
+                text = self._call_provider_text(prompt, "open_question")
                 if not text:
                     if self._should_abort_retry():
                         break
@@ -678,7 +779,7 @@ Nota de 0 a 100. Considere correto se nota >= 70.
         tentativas = max(1, int(retries or 1))
         for attempt in range(tentativas):
             try:
-                text = self.provider.generate_text(prompt)
+                text = self._call_provider_text(prompt, "grade_open_answer")
                 if not text:
                     if self._should_abort_retry():
                         break
@@ -728,7 +829,7 @@ Explique para um estudante iniciante:
         tentativas = max(1, int(retries or 1))
         for attempt in range(tentativas):
             try:
-                text = self.provider.generate_text(prompt)
+                text = self._call_provider_text(prompt, "explain_simple")
                 if text:
                     return text.strip()
             except Exception as e:
@@ -771,7 +872,7 @@ Retorne APENAS JSON no formato:
         tentativas = max(1, int(retries or 1))
         for attempt in range(tentativas):
             try:
-                text = self.provider.generate_text(prompt)
+                text = self._call_provider_text(prompt, "study_plan")
                 if not text:
                     if self._should_abort_retry():
                         break
@@ -782,15 +883,16 @@ Retorne APENAS JSON no formato:
                     for item in data[:7]:
                         if not isinstance(item, dict):
                             continue
-                        result.append(
-                            {
-                                "dia": str(item.get("dia") or "Dia"),
-                                "tema": str(item.get("tema") or "Geral"),
-                                "atividade": str(item.get("atividade") or "Resolver questoes"),
-                                "duracao_min": int(item.get("duracao_min") or tempo_diario_min),
-                                "prioridade": int(item.get("prioridade") or 1),
-                            }
-                        )
+                        row = {
+                            "dia": str(item.get("dia") or "Dia"),
+                            "tema": str(item.get("tema") or "Geral"),
+                            "atividade": str(item.get("atividade") or "Resolver questoes"),
+                            "duracao_min": int(item.get("duracao_min") or tempo_diario_min),
+                            "prioridade": int(item.get("prioridade") or 1),
+                        }
+                        if not self.validate_task_payload("study_plan_item", row)[0]:
+                            continue
+                        result.append(row)
                     if result:
                         return result
             except Exception:
@@ -821,17 +923,274 @@ Retorne APENAS JSON no formato:
         topic: str = "",
         retries: int = 2,
     ) -> Dict:
+        def _clean_text(value: Any, max_len: int = 280) -> str:
+            text = re.sub(r"\s+", " ", str(value or "")).strip()
+            if not text:
+                return ""
+            return text[:max_len]
+
+        def _as_str_list(value: Any, max_items: int = 8, max_len: int = 180) -> List[str]:
+            if not isinstance(value, list):
+                return []
+            out: List[str] = []
+            seen = set()
+            for item in value:
+                text = _clean_text(item, max_len=max_len)
+                if not text:
+                    continue
+                key = text.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(text)
+                if len(out) >= max_items:
+                    break
+            return out
+
+        def _as_definition_list(value: Any, max_items: int = 8) -> List[Dict]:
+            if not isinstance(value, list):
+                return []
+            out: List[Dict] = []
+            for item in value:
+                if isinstance(item, dict):
+                    termo = _clean_text(item.get("termo") or item.get("conceito") or item.get("titulo"), 90)
+                    definicao = _clean_text(item.get("definicao") or item.get("descricao") or item.get("explicacao"), 240)
+                else:
+                    raw = _clean_text(item, 260)
+                    if ":" in raw:
+                        left, right = raw.split(":", 1)
+                        termo = _clean_text(left, 90)
+                        definicao = _clean_text(right, 240)
+                    else:
+                        termo = ""
+                        definicao = raw
+                if termo and definicao:
+                    out.append({"termo": termo, "definicao": definicao})
+                elif definicao:
+                    out.append({"termo": "Conceito", "definicao": definicao})
+                if len(out) >= max_items:
+                    break
+            return out
+
+        def _normalize_dificuldade(value: Any) -> str:
+            raw = _clean_text(value, 24).lower()
+            if ("facil" in raw) or ("fácil" in raw) or ("easy" in raw):
+                return "facil"
+            if ("dificil" in raw) or ("difícil" in raw) or ("hard" in raw):
+                return "dificil"
+            return "medio"
+
+        def _normalize_tags(value: Any, max_items: int = 6) -> List[str]:
+            if isinstance(value, str):
+                parts = [x.strip() for x in re.split(r"[;,|]", value) if x.strip()]
+                return _as_str_list(parts, max_items=max_items, max_len=36)
+            return _as_str_list(value, max_items=max_items, max_len=36)
+
+        def _as_flashcard_suggestions(value: Any, max_items: int = 10) -> List[Dict]:
+            if not isinstance(value, list):
+                return []
+            out: List[Dict] = []
+            seen = set()
+            for item in value:
+                if isinstance(item, dict):
+                    frente = _clean_text(item.get("frente") or item.get("front") or item.get("pergunta"), 140)
+                    verso = _clean_text(item.get("verso") or item.get("back") or item.get("resposta"), 240)
+                    tags = _normalize_tags(item.get("tags"))
+                    dificuldade = _normalize_dificuldade(item.get("dificuldade"))
+                else:
+                    raw = _clean_text(item, 320)
+                    if "->" in raw:
+                        left, right = raw.split("->", 1)
+                    elif ":" in raw:
+                        left, right = raw.split(":", 1)
+                    else:
+                        left, right = raw, ""
+                    frente = _clean_text(left, 140)
+                    verso = _clean_text(right, 240)
+                    tags = []
+                    dificuldade = "medio"
+                if not frente:
+                    continue
+                if not verso:
+                    verso = "Explique o conceito com suas palavras."
+                key = frente.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"frente": frente, "verso": verso, "tags": tags, "dificuldade": dificuldade})
+                if len(out) >= max_items:
+                    break
+            return out
+
+        def _as_question_suggestions(value: Any, max_items: int = 8) -> List[Dict]:
+            if not isinstance(value, list):
+                return []
+            out: List[Dict] = []
+            seen = set()
+            for item in value:
+                if isinstance(item, dict):
+                    enunciado = _clean_text(item.get("enunciado") or item.get("pergunta") or item.get("question"), 220)
+                    alternativas_raw = item.get("alternativas") or item.get("opcoes") or item.get("options") or []
+                    if isinstance(alternativas_raw, str):
+                        alternativas_raw = [x.strip() for x in re.split(r"\n|;", alternativas_raw) if x.strip()]
+                    alternativas = _as_str_list(alternativas_raw, max_items=5, max_len=140)
+                    if len(alternativas) < 2:
+                        alternativas = [
+                            "Alternativa A",
+                            "Alternativa B",
+                            "Alternativa C",
+                            "Alternativa D",
+                        ]
+                    gabarito_raw = item.get("gabarito")
+                    if gabarito_raw is None:
+                        gabarito_raw = item.get("correta_index", item.get("indice_correto", 0))
+                    if isinstance(gabarito_raw, str):
+                        gr = gabarito_raw.strip().upper()
+                        if gr in {"A", "B", "C", "D", "E"}:
+                            gabarito = ["A", "B", "C", "D", "E"].index(gr)
+                        else:
+                            try:
+                                gabarito = int(gr)
+                            except Exception:
+                                gabarito = 0
+                    else:
+                        try:
+                            gabarito = int(gabarito_raw)
+                        except Exception:
+                            gabarito = 0
+                    gabarito = max(0, min(gabarito, len(alternativas) - 1))
+                    explicacao = _clean_text(item.get("explicacao") or item.get("resposta_curta") or item.get("feedback"), 240)
+                    tags = _normalize_tags(item.get("tags"))
+                    dificuldade = _normalize_dificuldade(item.get("dificuldade"))
+                else:
+                    raw = _clean_text(item, 320)
+                    if "?" in raw:
+                        enunciado = _clean_text(raw if raw.endswith("?") else raw.split("?")[0] + "?", 220)
+                    else:
+                        enunciado = _clean_text(raw, 220)
+                    alternativas = [
+                        "Alternativa A",
+                        "Alternativa B",
+                        "Alternativa C",
+                        "Alternativa D",
+                    ]
+                    gabarito = 0
+                    explicacao = ""
+                    tags = []
+                    dificuldade = "medio"
+                if not enunciado:
+                    continue
+                key = enunciado.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(
+                    {
+                        "enunciado": enunciado,
+                        "alternativas": alternativas,
+                        "gabarito": gabarito,
+                        "explicacao": explicacao or "Use os pontos-chave do resumo para justificar a resposta correta.",
+                        "tags": tags,
+                        "dificuldade": dificuldade,
+                    }
+                )
+                if len(out) >= max_items:
+                    break
+            return out
+
+        def _normalize_summary_payload(data: Dict) -> Dict:
+            titulo = _clean_text(data.get("titulo") or topic or "Resumo de estudo", 120)
+            resumo_curto = _clean_text(data.get("resumo_curto") or data.get("resumo"), 520)
+            resumo_estruturado = data.get("resumo_estruturado")
+            if isinstance(resumo_estruturado, str):
+                resumo_estruturado = [x.strip(" -") for x in resumo_estruturado.splitlines() if x.strip()]
+            resumo_estruturado = _as_str_list(resumo_estruturado, max_items=10, max_len=220)
+            topicos_principais = _as_str_list(data.get("topicos_principais") or data.get("topicos"), max_items=10, max_len=120)
+            definicoes = _as_definition_list(data.get("definicoes"), max_items=8)
+            exemplos = _as_str_list(data.get("exemplos"), max_items=8, max_len=220)
+            pegadinhas = _as_str_list(data.get("pegadinhas"), max_items=8, max_len=220)
+            checklist = _as_str_list(data.get("checklist_de_estudo"), max_items=10, max_len=180)
+            sugestoes_flash = _as_flashcard_suggestions(data.get("sugestoes_flashcards"), max_items=10)
+            sugestoes_q = _as_question_suggestions(data.get("sugestoes_questoes"), max_items=8)
+
+            if not resumo_curto and resumo_estruturado:
+                resumo_curto = " ".join(resumo_estruturado[:3])[:520]
+            if not resumo_curto:
+                resumo_curto = "Resumo indisponivel no momento."
+            if not topicos_principais and definicoes:
+                topicos_principais = [d.get("termo", "") for d in definicoes if d.get("termo")]
+            if not topicos_principais:
+                topicos_principais = ["Visao geral do material"]
+            if not checklist:
+                checklist = [
+                    "Leia o resumo curto e marque duvidas",
+                    "Resolva 5 questoes sobre os topicos principais",
+                    "Revise os erros no mesmo dia",
+                ]
+            if not sugestoes_flash and topicos_principais:
+                sugestoes_flash = [
+                    {
+                        "frente": f"O que e {topicos_principais[0]}?",
+                        "verso": "Defina com suas palavras e cite um exemplo pratico.",
+                        "tags": [topicos_principais[0]],
+                        "dificuldade": "medio",
+                    }
+                ]
+            if not sugestoes_q and topicos_principais:
+                sugestoes_q = [
+                    {
+                        "enunciado": f"Qual alternativa melhor descreve {topicos_principais[0]}?",
+                        "alternativas": [
+                            "Definicao central do topico",
+                            "Exemplo desconectado do tema",
+                            "Opiniao sem relacao tecnica",
+                            "Descricao incorreta do conceito",
+                        ],
+                        "gabarito": 0,
+                        "explicacao": "A alternativa correta apresenta a definicao central do topico estudado.",
+                        "tags": [topicos_principais[0]],
+                        "dificuldade": "medio",
+                    }
+                ]
+
+            return {
+                "titulo": titulo,
+                "resumo_curto": resumo_curto,
+                "resumo_estruturado": resumo_estruturado,
+                "topicos_principais": topicos_principais,
+                "definicoes": definicoes,
+                "exemplos": exemplos,
+                "pegadinhas": pegadinhas,
+                "checklist_de_estudo": checklist,
+                "sugestoes_flashcards": sugestoes_flash,
+                "sugestoes_questoes": sugestoes_q,
+                # Compatibilidade com payload legado
+                "resumo": resumo_curto,
+                "topicos": topicos_principais,
+            }
+
         if not content:
-            return {"resumo": "", "topicos": []}
-        texto = "\n".join(content[:6])[:7000]
+            return _normalize_summary_payload({})
+
+        texto = "\n".join(content[:8])[:9000]
         prompt = f"""
-Resuma o material para estudo.
+Voce e um mentor de estudo para concursos e certificacoes tecnicas.
+Gere um resumo acionavel em JSON.
+
 Topico opcional: {topic}
 
-Retorne APENAS JSON:
+Retorne APENAS JSON com este schema:
 {{
-  "resumo": "Resumo objetivo em ate 8 linhas.",
-  "topicos": ["Topico 1", "Topico 2", "Topico 3", "Topico 4", "Topico 5"]
+  "titulo": "Titulo curto do material",
+  "resumo_curto": "Resumo objetivo em ate 6 linhas",
+  "resumo_estruturado": ["Item 1", "Item 2"],
+  "topicos_principais": ["Topico 1", "Topico 2"],
+  "definicoes": [{{"termo": "Termo", "definicao": "Definicao curta"}}],
+  "exemplos": ["Exemplo pratico 1"],
+  "pegadinhas": ["Erro comum 1"],
+  "checklist_de_estudo": ["Acao 1", "Acao 2"],
+  "sugestoes_flashcards": [{{"frente": "Pergunta", "verso": "Resposta", "tags": ["tag1"], "dificuldade": "medio"}}],
+  "sugestoes_questoes": [{{"enunciado": "Pergunta objetiva", "alternativas": ["A", "B", "C", "D"], "gabarito": 0, "explicacao": "Motivo", "tags": ["tag1"], "dificuldade": "medio"}}]
 }}
 
 Material:
@@ -840,26 +1199,22 @@ Material:
         tentativas = max(1, int(retries or 1))
         for attempt in range(tentativas):
             try:
-                text = self.provider.generate_text(prompt)
+                text = self._call_provider_text(prompt, "study_summary")
                 if not text:
                     if self._should_abort_retry():
                         break
                     continue
                 data = self.provider.extract_json_object(text)
                 if isinstance(data, dict):
-                    resumo = str(data.get("resumo") or "").strip()
-                    topicos = data.get("topicos") or []
-                    if not isinstance(topicos, list):
-                        topicos = []
-                    topicos = [str(t).strip() for t in topicos if str(t).strip()][:8]
-                    if resumo:
-                        return {"resumo": resumo, "topicos": topicos}
+                    normalized = _normalize_summary_payload(data)
+                    if normalized.get("resumo_curto") and self.validate_task_payload("study_summary", normalized)[0]:
+                        return normalized
             except Exception:
                 if self._should_abort_retry():
                     break
             if attempt < tentativas - 1:
                 time.sleep(0.35)
-        return {"resumo": "Resumo indisponivel no momento.", "topicos": []}
+        return _normalize_summary_payload({})
 
 
 # ========== UTILIDADES ==========

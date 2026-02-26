@@ -3,6 +3,7 @@
 LoginView - versao estavel para Flet 0.80.x
 """
 
+import asyncio
 import threading
 import os
 import flet as ft
@@ -13,15 +14,19 @@ from core.error_monitor import log_exception
 
 
 class LoginView(ft.View):
-    def __init__(self, page, database, on_login_success):
+    def __init__(self, page, database, on_login_success, backend=None):
         super().__init__(route="/login")
         self._page = page
         self.db = database
+        self.backend = backend
         self.on_login_success = on_login_success
         self.tema_escuro = page.theme_mode == ft.ThemeMode.DARK
         self.modo_atual = "login"
         self.autenticando_google = False
-        self.google_login_enabled = bool(GOOGLE_OAUTH.get("enabled", False))
+        self.auth_busy = False
+        # Modo padrao: autenticacao somente online (backend).
+        self.online_only_auth = str(os.getenv("QUIZVANCE_AUTH_MODE") or "online").strip().lower() != "hybrid"
+        self.google_login_enabled = bool(GOOGLE_OAUTH.get("enabled", False)) and (not self.online_only_auth)
         self._prev_keyboard_handler = getattr(self._page, "on_keyboard_event", None)
 
         self._criar_componentes()
@@ -81,6 +86,7 @@ class LoginView(ft.View):
             visible=False,
         )
         self.login_feedback = ft.Text("", visible=False, size=12, text_align=ft.TextAlign.CENTER)
+        self.cadastro_feedback = ft.Text("", visible=False, size=12, text_align=ft.TextAlign.CENTER)
 
     def _construir_interface(self):
         bg_color = CORES["fundo_escuro"] if self.tema_escuro else CORES["fundo"]
@@ -111,6 +117,19 @@ class LoginView(ft.View):
         root_padding = 6 if mobile else (10 if compact else 24)
         field_width = max(240 if mobile else 280, content_w - (18 if mobile else (24 if compact else 40)))
 
+        self.login_button = ft.ElevatedButton(
+            "Entrar",
+            icon=ft.Icons.LOGIN,
+            width=field_width,
+            height=42 if mobile else 44,
+            on_click=self._acao_login,
+            style=ft.ButtonStyle(
+                bgcolor=CORES["primaria"],
+                color="white",
+                shape=ft.RoundedRectangleBorder(radius=12),
+            ),
+        )
+
         self.container_login = ft.Column(
             controls=[
                 ft.Text("Bem-vindo de volta!", size=22 if mobile else (30 if compact else 34), weight=ft.FontWeight.BOLD, color=text_color),
@@ -133,18 +152,7 @@ class LoginView(ft.View):
                 self.email_login,
                 self.senha_login,
                 self.login_feedback,
-                ft.ElevatedButton(
-                    "Entrar",
-                    icon=ft.Icons.LOGIN,
-                    width=field_width,
-                    height=42 if mobile else 44,
-                    on_click=self._acao_login,
-                    style=ft.ButtonStyle(
-                        bgcolor=CORES["primaria"],
-                        color="white",
-                        shape=ft.RoundedRectangleBorder(radius=12),
-                    ),
-                ),
+                self.login_button,
                 ft.Row(
                     controls=[
                         ft.Text("Sem conta?", color=muted_color),
@@ -157,6 +165,19 @@ class LoginView(ft.View):
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             spacing=6 if compact else 8,
             visible=True,
+        )
+
+        self.cadastro_button = ft.ElevatedButton(
+            "Criar conta",
+            icon=ft.Icons.PERSON_ADD,
+            width=field_width,
+            height=42 if mobile else 44,
+            on_click=self._acao_cadastro,
+            style=ft.ButtonStyle(
+                bgcolor=CORES["primaria"],
+                color="white",
+                shape=ft.RoundedRectangleBorder(radius=12),
+            ),
         )
 
         self.container_cadastro = ft.Column(
@@ -182,18 +203,8 @@ class LoginView(ft.View):
                 self.email_cad,
                 self.senha_cad,
                 self.idade_cad,
-                ft.ElevatedButton(
-                    "Criar conta",
-                    icon=ft.Icons.PERSON_ADD,
-                    width=field_width,
-                    height=42 if mobile else 44,
-                    on_click=self._acao_cadastro,
-                    style=ft.ButtonStyle(
-                        bgcolor=CORES["primaria"],
-                        color="white",
-                        shape=ft.RoundedRectangleBorder(radius=12),
-                    ),
-                ),
+                self.cadastro_feedback,
+                self.cadastro_button,
                 ft.Row(
                     controls=[
                         ft.Text("Ja tem conta", color=muted_color),
@@ -325,33 +336,126 @@ class LoginView(ft.View):
 
     def _acao_login(self, e):
         try:
+            if self.auth_busy:
+                return
             email = (self.email_login.value or "").strip()
             senha = self.senha_login.value or ""
             self.login_feedback.visible = False
             self.login_feedback.value = ""
             self.login_feedback.update()
+            self.cadastro_feedback.visible = False
+            self.cadastro_feedback.value = ""
 
             if not email or not senha:
                 self._set_login_feedback("Preencha ID e senha para entrar.", "warning")
                 self._mostrar_toast("Preencha todos os campos", "warning")
                 return
 
-            usuario = self.db.fazer_login(email, senha)
-            if usuario:
-                self._set_login_feedback("Login realizado. Entrando...", "sucesso")
-                self.on_login_success(usuario)
-            else:
-                if hasattr(self.db, "contar_usuarios") and self.db.contar_usuarios() == 0:
-                    self._set_login_feedback("Nenhuma conta cadastrada. Crie sua conta primeiro.", "warning")
-                    self._mostrar_toast("Nenhuma conta cadastrada. Use 'Cadastre-se' primeiro.", "warning")
-                else:
-                    self._set_login_feedback("ID ou senha incorretos.", "erro")
-                    self._mostrar_toast("ID ou senha incorretos", "erro")
-                    self._page.update()
+            if not (self.backend and self.backend.enabled()):
+                self._set_login_feedback("Backend offline. Login disponivel apenas online.", "erro")
+                self._mostrar_toast("Conecte-se a internet para entrar.", "warning")
+                return
+
+            self._set_auth_busy(True)
+            self._set_login_feedback("Validando credenciais...", "info")
+            self._page.run_task(self._acao_login_async, email, senha)
         except Exception as ex:
             log_exception(ex, "login_view._acao_login")
+            self._set_auth_busy(False)
             self._set_login_feedback("Erro interno ao tentar login.", "erro")
             self._mostrar_toast("Erro interno no login. Veja os logs do aplicativo", "erro")
+
+    async def _acao_login_async(self, email: str, senha: str):
+        try:
+            migrated_from_local = False
+            try:
+                b = await asyncio.to_thread(self.backend.login, email, senha)
+            except Exception as ex_backend:
+                # Compatibilidade: contas legadas podiam existir apenas no SQLite local.
+                try:
+                    legacy_user = await asyncio.to_thread(self.db.fazer_login, email, senha)
+                except Exception:
+                    legacy_user = None
+
+                if not legacy_user:
+                    self._set_login_feedback(f"Falha no login online: {ex_backend}", "erro")
+                    self._mostrar_toast("ID ou senha incorretos, ou backend indisponivel.", "erro")
+                    return
+
+                self._set_login_feedback("Conta local encontrada. Sincronizando no backend...", "info")
+                legacy_name = str(legacy_user.get("nome") or email.split("@")[0]).strip()
+                try:
+                    b = await asyncio.to_thread(self.backend.register, legacy_name, email, senha)
+                    migrated_from_local = True
+                except Exception:
+                    try:
+                        b = await asyncio.to_thread(self.backend.login, email, senha)
+                        migrated_from_local = True
+                    except Exception as ex_sync:
+                        # Fallback controlado para contas antigas: entra local e sincroniza depois.
+                        legacy_user["backend_user_id"] = int(
+                            legacy_user.get("backend_user_id") or legacy_user.get("id") or 0
+                        )
+                        self._set_login_feedback(
+                            f"Conta local carregada (sincronizacao pendente): {ex_sync}",
+                            "warning",
+                        )
+                        self._mostrar_toast(
+                            "Conta antiga local detectada. Login liberado em modo de compatibilidade.",
+                            "warning",
+                        )
+                        self.on_login_success(legacy_user)
+                        return
+
+            usuario = await asyncio.to_thread(
+                self.db.sync_cloud_user,
+                int(b.get("user_id") or 0),
+                str(b.get("email_id") or email).lower(),
+                str(b.get("name") or email.split("@")[0]),
+            )
+            if not usuario:
+                self._set_login_feedback("Falha ao sincronizar perfil local.", "erro")
+                self._mostrar_toast("Nao foi possivel preparar seu perfil neste dispositivo.", "erro")
+                return
+
+            usuario["backend_user_id"] = int(b.get("user_id") or 0)
+            usuario["plan_code"] = b.get("plan_code", usuario.get("plan_code", "free"))
+            usuario["premium_active"] = 1 if b.get("premium_active") else 0
+            usuario["premium_until"] = b.get("premium_until")
+            try:
+                remote_cfg = await asyncio.to_thread(self.backend.get_user_settings, int(usuario["backend_user_id"]))
+                provider = str(remote_cfg.get("provider") or usuario.get("provider") or "gemini")
+                model = str(remote_cfg.get("model") or usuario.get("model") or "gemini-2.5-flash")
+                api_key = remote_cfg.get("api_key", usuario.get("api_key"))
+                economia_mode = bool(remote_cfg.get("economia_mode"))
+                telemetry_opt_in = bool(remote_cfg.get("telemetry_opt_in"))
+                ok_cfg = await asyncio.to_thread(
+                    self.db.sync_ai_preferences,
+                    int(usuario.get("id") or 0),
+                    provider,
+                    model,
+                    api_key,
+                    economia_mode,
+                    telemetry_opt_in,
+                )
+                if ok_cfg:
+                    usuario["provider"] = provider
+                    usuario["model"] = model
+                    usuario["api_key"] = api_key
+                    usuario["economia_mode"] = 1 if economia_mode else 0
+                    usuario["telemetry_opt_in"] = 1 if telemetry_opt_in else 0
+            except Exception as ex_cfg:
+                log_exception(ex_cfg, "login_view._acao_login_async.sync_remote_settings")
+            if migrated_from_local:
+                self._mostrar_toast("Conta local antiga sincronizada com sucesso.", "sucesso")
+            self._set_login_feedback("Login realizado. Entrando...", "sucesso")
+            self.on_login_success(usuario)
+        except Exception as ex:
+            log_exception(ex, "login_view._acao_login_async")
+            self._set_login_feedback("Erro interno ao tentar login.", "erro")
+            self._mostrar_toast("Erro interno no login. Veja os logs do aplicativo", "erro")
+        finally:
+            self._set_auth_busy(False)
 
     def _submit_login(self, e):
         self._acao_login(e)
@@ -361,12 +465,17 @@ class LoginView(ft.View):
 
     def _acao_cadastro(self, e):
         try:
+            if self.auth_busy:
+                return
             nome = (self.nome_cad.value or "").strip()
             identificador = (self.email_cad.value or "").strip()
             senha = self.senha_cad.value or ""
             data_nascimento = (self.idade_cad.value or "").strip()
+            self.cadastro_feedback.visible = False
+            self.cadastro_feedback.value = ""
 
             if not all([nome, identificador, senha, data_nascimento]):
+                self._set_cadastro_feedback("Preencha todos os campos.", "warning")
                 self._mostrar_toast("Preencha todos os campos", "warning")
                 return
 
@@ -376,31 +485,67 @@ class LoginView(ft.View):
                 hoje = datetime.date.today()
                 idade = hoje.year - nascimento.year - ((hoje.month, hoje.day) < (nascimento.month, nascimento.day))
                 if idade < 13:
+                    self._set_cadastro_feedback("Idade minima: 13 anos.", "warning")
                     self._mostrar_toast("Idade minima: 13 anos", "warning")
                     return
             except ValueError:
+                self._set_cadastro_feedback("Data invalida. Use DD/MM/AAAA.", "warning")
                 self._mostrar_toast("Data invalida. Use DD/MM/AAAA", "warning")
                 return
 
             if len(senha) < 6:
+                self._set_cadastro_feedback("Senha deve ter no minimo 6 caracteres.", "warning")
                 self._mostrar_toast("Senha deve ter no minimo 6 caracteres", "warning")
                 return
 
-            sucesso, msg = self.db.criar_conta(nome, identificador, senha, data_nascimento)
-            if sucesso:
-                self._mostrar_toast("Conta criada com sucesso. Clique em 'Fazer login' para continuar.", "sucesso")
-                self.senha_cad.value = ""
-                self.idade_cad.value = ""
-                self._trocar_para_login(None)
-                self.login_feedback.value = "Conta criada! Use seu ID e senha para entrar."
-                self.login_feedback.color = CORES["sucesso"]
-                self.login_feedback.visible = True
-                self.update()
-            else:
-                self._mostrar_toast(msg, "erro")
+            if not (self.backend and self.backend.enabled()):
+                self._set_cadastro_feedback("Backend offline. Nao foi possivel criar conta online.", "erro")
+                self._mostrar_toast("Cadastro de novas contas requer backend online.", "warning")
+                return
+            self._set_auth_busy(True)
+            self._set_cadastro_feedback("Criando conta online...", "info")
+            self._page.run_task(self._acao_cadastro_async, nome, identificador, senha)
         except Exception as ex:
             log_exception(ex, "login_view._acao_cadastro")
+            self._set_auth_busy(False)
+            self._set_cadastro_feedback(f"Erro interno no cadastro: {ex}", "erro")
             self._mostrar_toast("Erro interno no cadastro. Veja os logs do aplicativo", "erro")
+
+    async def _acao_cadastro_async(self, nome: str, identificador: str, senha: str):
+        try:
+            try:
+                b = await asyncio.to_thread(self.backend.register, nome, identificador, senha)
+            except Exception as ex_backend:
+                self._set_cadastro_feedback(f"Falha no cadastro online: {ex_backend}", "erro")
+                self._mostrar_toast(f"Falha no cadastro online: {ex_backend}", "erro")
+                return
+
+            usuario = await asyncio.to_thread(
+                self.db.sync_cloud_user,
+                int(b.get("user_id") or 0),
+                str(b.get("email_id") or identificador).lower(),
+                str(b.get("name") or nome),
+            )
+            if not usuario:
+                self._set_cadastro_feedback("Conta online criada, mas falhou ao sincronizar no dispositivo.", "erro")
+                self._mostrar_toast("Conta criada online. Tente fazer login novamente.", "warning")
+                return
+
+            self._set_cadastro_feedback("Conta criada com sucesso.", "sucesso")
+            self._mostrar_toast("Conta criada com sucesso. Clique em 'Fazer login' para continuar.", "sucesso")
+            self.senha_cad.value = ""
+            self.idade_cad.value = ""
+            self._trocar_para_login(None)
+            self.login_feedback.value = "Conta criada! Use seu ID e senha para entrar."
+            self.login_feedback.color = CORES["sucesso"]
+            self.login_feedback.visible = True
+            self.update()
+        except Exception as ex:
+            log_exception(ex, "login_view._acao_cadastro_async")
+            self._set_cadastro_feedback(f"Erro interno no cadastro: {ex}", "erro")
+            self._mostrar_toast("Erro interno no cadastro. Veja os logs do aplicativo", "erro")
+        finally:
+            self._set_auth_busy(False)
 
     def _submit_cadastro(self, e):
         self._acao_cadastro(e)
@@ -445,6 +590,11 @@ class LoginView(ft.View):
             self._prev_keyboard_handler(e)
 
     def _login_google(self, e):
+        if self.auth_busy:
+            return
+        if self.online_only_auth:
+            self._mostrar_toast("Login Google indisponivel no modo online-only atual.", "warning")
+            return
         if not self.google_login_enabled:
             self._mostrar_toast("Login com Google temporariamente desativado.", "info")
             return
@@ -512,6 +662,42 @@ class LoginView(ft.View):
         self.login_feedback.color = cores.get(tipo, CORES["info"])
         self.login_feedback.visible = True
         self.update()
+
+    def _set_cadastro_feedback(self, msg: str, tipo: str):
+        cores = {
+            "sucesso": CORES["sucesso"],
+            "erro": CORES["erro"],
+            "warning": CORES["warning"],
+            "info": CORES["info"],
+        }
+        self.cadastro_feedback.value = msg
+        self.cadastro_feedback.color = cores.get(tipo, CORES["info"])
+        self.cadastro_feedback.visible = True
+        self.update()
+
+    def _set_auth_busy(self, busy: bool):
+        self.auth_busy = bool(busy)
+        controls = [
+            self.login_button,
+            self.cadastro_button,
+            self.botao_modo_login,
+            self.botao_modo_cadastro,
+            self.email_login,
+            self.senha_login,
+            self.nome_cad,
+            self.email_cad,
+            self.senha_cad,
+            self.idade_cad,
+        ]
+        for control in controls:
+            try:
+                control.disabled = self.auth_busy
+            except Exception:
+                pass
+        try:
+            self.update()
+        except Exception:
+            pass
 
     def _mostrar_toast(self, msg: str, tipo: str):
         cores = {
